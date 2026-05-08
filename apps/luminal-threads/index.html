@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Luminal Threads</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #020208; overflow: hidden; cursor: crosshair; }
+  canvas { display: block; }
+  #hud {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    font-family: 'Orbitron', monospace;
+    font-size: 12px;
+    color: rgba(120, 200, 255, 0.7);
+    pointer-events: none;
+    text-shadow: 0 0 10px rgba(0, 200, 255, 0.5);
+    line-height: 1.8;
+  }
+  #hud .label { color: rgba(180, 140, 255, 0.5); font-size: 10px; letter-spacing: 2px; }
+  #hud .value { color: rgba(0, 240, 200, 0.9); font-weight: 700; }
+  #hud .mode { color: rgba(255, 100, 200, 0.9); font-weight: 700; }
+  #legend {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Orbitron', monospace;
+    font-size: 10px;
+    color: rgba(100, 160, 200, 0.5);
+    letter-spacing: 1px;
+    pointer-events: none;
+    text-align: center;
+  }
+  #title {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    font-family: 'Orbitron', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    color: rgba(200, 160, 255, 0.6);
+    letter-spacing: 4px;
+    pointer-events: none;
+    text-shadow: 0 0 20px rgba(180, 100, 255, 0.4);
+  }
+  .scanlines {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="label">FPS</div>
+  <div id="fps" class="value">60</div>
+  <div class="label">PARTICLES</div>
+  <div id="count">3000</div>
+  <div class="label">MODE</div>
+  <div id="mode" class="mode">HARMONIC 1:1</div>
+</div>
+<div id="title">LUMINAL THREADS</div>
+<div id="legend">DRAG — warp field &nbsp;|&nbsp; CLICK — burst &nbsp;|&nbsp; SPACE — pause &nbsp;|&nbsp; C — clear &nbsp;|&nbsp; 1-5 — harmonic mode</div>
+<div class="scanlines"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ─── Config ───────────────────────────────────────────────────────────────────
+const N = 3000;
+const TRAIL_LEN = 40;
+const W = window.innerWidth;
+const H = window.innerHeight;
+const CX = W / 2;
+const CY = H / 2;
+const AMP = Math.min(W, H) * 0.35;
+
+// ─── Harmonic series ─────────────────────────────────────────────────────────
+const HARMONICS = [
+  { f1: 1, f2: 2, label: 'HARMONIC 1:2' },
+  { f1: 2, f2: 3, label: 'HARMONIC 2:3' },
+  { f1: 3, f2: 4, label: 'HARMONIC 3:4' },
+  { f1: 3, f2: 5, label: 'HARMONIC 3:5' },
+  { f1: 4, f2: 5, label: 'HARMONIC 4:5' },
+];
+let harmonicIdx = 0;
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let paused = false;
+let time = 0;
+let mouse = { x: CX, y: CY, active: false };
+let mouseForce = { x: 0, y: 0 };
+let burstPos = null;
+let burstTime = 0;
+const BURST_DURATION = 1.5;
+const BURST_RADIUS = 180;
+const BURST_FORCE = 12;
+
+// ─── Particle data ────────────────────────────────────────────────────────────
+const particles = [];
+
+class Particle {
+  constructor(i) {
+    this.phase = Math.random() * Math.PI * 2;
+    this.phase2 = Math.random() * Math.PI * 2;
+    // Distribute frequencies across harmonics
+    const h = HARMONICS[harmonicIdx];
+    const oct = Math.floor(Math.random() * 3); // 0,1,2 octave range
+    this.f1 = h.f1 * (1 + oct * 0.5);
+    this.f2 = h.f2 * (1 + oct * 0.5);
+    this.speed = 0.3 + Math.random() * 0.4;
+    this.trail = new Float32Array(TRAIL_LEN * 2);
+    this.trailHead = 0;
+    this.trailCount = 0;
+    // Visual
+    this.hueOffset = Math.random();
+    // Position
+    this.x = CX;
+    this.y = CY;
+    this.vx = 0;
+    this.vy = 0;
+  }
+
+  targetX(t) {
+    return CX + AMP * Math.sin(this.f1 * t * this.speed + this.phase) * 0.7
+               + AMP * 0.3 * Math.cos(this.f2 * t * this.speed * 0.7 + this.phase2);
+  }
+
+  targetY(t) {
+    return CY + AMP * Math.cos(this.f2 * t * this.speed + this.phase2) * 0.7
+               + AMP * 0.3 * Math.sin(this.f1 * t * this.speed * 0.7 + this.phase);
+  }
+
+  update(dt, t) {
+    const tx = this.targetX(t);
+    const ty = this.targetY(t);
+
+    // Mouse force
+    const dx = mouse.x - this.x;
+    const dy = mouse.y - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 200 && dist > 1) {
+      const force = (1 - dist / 200) * 0.8;
+      this.vx -= (dx / dist) * force;
+      this.vy -= (dy / dist) * force;
+    }
+
+    // Burst
+    if (burstPos && burstTime < BURST_DURATION) {
+      const bdx = burstPos.x - this.x;
+      const bdy = burstPos.y - this.y;
+      const bdist = Math.sqrt(bdx * bdx + bdy * bdy);
+      if (bdist < BURST_RADIUS && bdist > 1) {
+        const str = (1 - bdist / BURST_RADIUS) * BURST_FORCE * (1 - burstTime / BURST_DURATION);
+        this.vx += (bdx / bdist) * str;
+        this.vy += (bdy / bdist) * str;
+      }
+    }
+
+    // Spring toward Lissajous target
+    const k = 0.04;
+    this.vx += (tx - this.x) * k;
+    this.vy += (ty - this.y) * k;
+
+    // Damping
+    this.vx *= 0.92;
+    this.vy *= 0.92;
+
+    // Integrate
+    this.x += this.vx;
+    this.y += this.vy;
+
+    // Trail
+    this.trail[this.trailHead * 2] = this.x;
+    this.trail[this.trailHead * 2 + 1] = this.y;
+    this.trailHead = (this.trailHead + 1) % TRAIL_LEN;
+    if (this.trailCount < TRAIL_LEN) this.trailCount++;
+  }
+
+  getTrailVertex(i) {
+    // Get trail position at logical index from head
+    const idx = (this.trailHead - 1 - i + TRAIL_LEN * 2) % TRAIL_LEN;
+    return {
+      x: this.trail[idx * 2],
+      y: this.trail[idx * 2 + 1]
+    };
+  }
+
+  velocity() {
+    return Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+  }
+}
+
+// Init particles
+for (let i = 0; i < N; i++) {
+  particles.push(new Particle(i));
+}
+
+// ─── Three.js Setup ──────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x020208, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(0, W, 0, H, 0, 1);
+camera.position.z = 1;
+
+// ─── Trail geometry ──────────────────────────────────────────────────────────
+// We'll use LineSegments for trails. Each particle = TRAIL_LEN-1 segments.
+// Total vertices: N * TRAIL_LEN
+const trailPositions = new Float32Array(N * TRAIL_LEN * 3);
+const trailColors = new Float32Array(N * TRAIL_LEN * 3);
+
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailColors, 3));
+
+const trailMat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.6,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+
+const trailLines = new THREE.LineSegments(trailGeo, trailMat);
+scene.add(trailLines);
+
+// ─── Particle dots ───────────────────────────────────────────────────────────
+const dotPositions = new Float32Array(N * 3);
+const dotColors = new Float32Array(N * 3);
+const dotSizes = new Float32Array(N);
+
+const dotGeo = new THREE.BufferGeometry();
+dotGeo.setAttribute('position', new THREE.BufferAttribute(dotPositions, 3));
+dotGeo.setAttribute('color', new THREE.BufferAttribute(dotColors, 3));
+dotGeo.setAttribute('size', new THREE.BufferAttribute(dotSizes, 1));
+
+// Custom shader for soft dots with glow
+const dotVert = `
+  attribute float size;
+  attribute vec3 color;
+  varying vec3 vColor;
+  void main() {
+    vColor = color;
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = size * (300.0 / -mvPosition.z);
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+const dotFrag = `
+  varying vec3 vColor;
+  void main() {
+    float d = length(gl_PointCoord - 0.5);
+    if (d > 0.5) discard;
+    float alpha = 1.0 - smoothstep(0.2, 0.5, d);
+    gl_FragColor = vec4(vColor, alpha);
+  }
+`;
+
+const dotMat = new THREE.ShaderMaterial({
+  vertexShader: dotVert,
+  fragmentShader: dotFrag,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+
+const dots = new THREE.Points(dotGeo, dotMat);
+scene.add(dots);
+
+// ─── Background star field ────────────────────────────────────────────────────
+const starPositions = new Float32Array(400 * 3);
+for (let i = 0; i < 400; i++) {
+  starPositions[i * 3] = Math.random() * W;
+  starPositions[i * 3 + 1] = Math.random() * H;
+  starPositions[i * 3 + 2] = 0;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+const starMat = new THREE.PointsMaterial({ color: 0x334466, size: 1.5, sizeAttenuation: true });
+const stars = new THREE.Points(starGeo, starMat);
+scene.add(stars);
+
+// ─── Color mapping ───────────────────────────────────────────────────────────
+function velToColor(vel) {
+  // Slow: electric cyan → mid: violet → fast: hot rose
+  const t = Math.min(vel / 8, 1);
+  let r, g, b;
+  if (t < 0.5) {
+    const s = t * 2;
+    r = s * 0.4;
+    g = 0.8 + s * 0.2;
+    b = 1.0;
+  } else {
+    const s = (t - 0.5) * 2;
+    r = 0.4 + s * 0.9;
+    g = 1.0 - s * 0.8;
+    b = 1.0 - s * 0.7;
+  }
+  return [r, g, b];
+}
+
+function trailFadeColor(i, n) {
+  const t = 1 - i / n;
+  // Cyan → violet → rose along trail
+  const hue = 0.5 + t * 0.3; // 0.5=cyan, 0.8=violet, 1.0=rose
+  // HSL to RGB (simplified)
+  const h = hue;
+  const s = 0.9;
+  const l = 0.5 + t * 0.2;
+  // Convert
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h * 6) % 2 - 1));
+  const m = l - c / 2;
+  let r, g, b;
+  if (h < 1/6) { r=c; g=x; b=0; }
+  else if (h < 2/6) { r=x; g=c; b=0; }
+  else if (h < 3/6) { r=0; g=c; b=x; }
+  else if (h < 4/6) { r=0; g=x; b=c; }
+  else if (h < 5/6) { r=x; g=0; b=c; }
+  else { r=c; g=0; b=x; }
+  return [r+m, g+m, b+m];
+}
+
+// ─── FPS tracking ────────────────────────────────────────────────────────────
+let lastTime = performance.now();
+let frameCount = 0;
+let fps = 60;
+let fpsTimer = 0;
+const fpsEl = document.getElementById('fps');
+const modeEl = document.getElementById('mode');
+
+// ─── Update loop ─────────────────────────────────────────────────────────────
+function updateTrails() {
+  const pos = trailPositions;
+  const col = trailColors;
+  let vi = 0;
+  for (let p = 0; p < N; p++) {
+    const particle = particles[p];
+    const tc = particle.trailCount;
+    for (let i = 0; i < TRAIL_LEN; i++) {
+      const idx = i < tc ? i : tc - 1;
+      const tp = particle.getTrailVertex(i);
+      pos[vi * 3] = tp.x;
+      pos[vi * 3 + 1] = tp.y;
+      pos[vi * 3 + 2] = 0;
+      const [r, g, b] = trailFadeColor(i, TRAIL_LEN);
+      col[vi * 3] = r * 0.6;
+      col[vi * 3 + 1] = g * 0.6;
+      col[vi * 3 + 2] = b * 0.6;
+      vi++;
+    }
+  }
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+}
+
+function updateDots() {
+  const pos = dotPositions;
+  const col = dotColors;
+  const sz = dotSizes;
+  for (let i = 0; i < N; i++) {
+    const p = particles[i];
+    pos[i * 3] = p.x;
+    pos[i * 3 + 1] = p.y;
+    pos[i * 3 + 2] = 0;
+    const vel = p.velocity();
+    const [r, g, b] = velToColor(vel);
+    col[i * 3] = r;
+    col[i * 3 + 1] = g;
+    col[i * 3 + 2] = b;
+    sz[i] = 2.5 + Math.min(vel * 0.8, 4);
+  }
+  dotGeo.attributes.position.needsUpdate = true;
+  dotGeo.attributes.color.needsUpdate = true;
+  dotGeo.attributes.size.needsUpdate = true;
+}
+
+function setHarmonic(idx) {
+  harmonicIdx = idx;
+  const h = HARMONICS[idx];
+  modeEl.textContent = h.label;
+  for (let i = 0; i < N; i++) {
+    const p = particles[i];
+    const oct = Math.floor(Math.random() * 3);
+    p.f1 = h.f1 * (1 + oct * 0.5);
+    p.f2 = h.f2 * (1 + oct * 0.5);
+  }
+}
+
+function animate(now) {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  // FPS
+  frameCount++;
+  fpsTimer += dt;
+  if (fpsTimer >= 0.5) {
+    fps = Math.round(frameCount / fpsTimer);
+    fpsEl.textContent = fps;
+    frameCount = 0;
+    fpsTimer = 0;
+  }
+
+  // Burst decay
+  if (burstPos) {
+    burstTime += dt;
+    if (burstTime > BURST_DURATION) burstPos = null;
+  }
+
+  if (!paused) {
+    time += dt;
+    for (let i = 0; i < N; i++) {
+      particles[i].update(dt, time);
+    }
+  }
+
+  updateTrails();
+  updateDots();
+  renderer.render(scene, camera);
+}
+animate(performance.now());
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+window.addEventListener('mousemove', e => {
+  mouse.x = e.clientX;
+  mouse.y = H - e.clientY; // Flip Y for Three.js coords
+  mouse.active = true;
+});
+
+window.addEventListener('click', e => {
+  burstPos = { x: e.clientX, y: H - e.clientY };
+  burstTime = 0;
+});
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    paused = !paused;
+  }
+  if (e.key === 'c' || e.key === 'C') {
+    for (let i = 0; i < N; i++) {
+      particles[i].trailHead = 0;
+      particles[i].trailCount = 0;
+    }
+  }
+  if (e.key >= '1' && e.key <= '5') {
+    setHarmonic(parseInt(e.key) - 1);
+  }
+});
+
+window.addEventListener('resize', () => {
+  location.reload();
+});
+
+// Initial render
+updateTrails();
+updateDots();
+</script>
+</body>
+</html>

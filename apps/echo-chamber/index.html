@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Echo Chamber — Spatial Audio Memory Palace</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #06060f;
+      --surface: #0d0d1a;
+      --border: #1a1a35;
+      --text: #b8b8e0;
+      --accent: #7c3aed;
+      --accent2: #06b6d4;
+      --muted: #4a4a7a;
+    }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: var(--bg);
+      font-family: 'Courier New', monospace;
+      color: var(--text);
+    }
+    canvas { display: block; position: fixed; inset: 0; }
+    #overlay {
+      position: fixed; inset: 0; pointer-events: none;
+      display: flex; flex-direction: column;
+      padding: 24px; gap: 16px; z-index: 10;
+    }
+    #top-bar {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 16px;
+    }
+    #title-block h1 {
+      font-size: 1.1rem; letter-spacing: 0.3em; color: var(--accent);
+      text-transform: uppercase;
+    }
+    #title-block p {
+      font-size: 0.65rem; color: var(--muted); margin-top: 4px; letter-spacing: 0.15em;
+    }
+    #status-panel {
+      background: rgba(13,13,26,0.8);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      min-width: 200px;
+      font-size: 0.7rem;
+      backdrop-filter: blur(8px);
+    }
+    #status-panel .label { color: var(--accent2); margin-bottom: 8px; letter-spacing: 0.2em; }
+    #status-panel .row { display: flex; justify-content: space-between; margin: 3px 0; }
+    #status-panel .key { color: var(--muted); }
+    #status-panel .val { color: var(--text); }
+    #status-panel .val.active { color: #10b981; }
+    #status-panel .val.warn { color: #f59e0b; }
+    #instructions {
+      margin-top: auto;
+      background: rgba(13,13,26,0.7);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      backdrop-filter: blur(8px);
+    }
+    #instructions span { color: var(--accent2); }
+    #modal-bg {
+      position: fixed; inset: 0;
+      background: rgba(6,6,15,0.85);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100; backdrop-filter: blur(6px);
+    }
+    #modal-bg.hidden { display: none; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 420px; width: 90%;
+    }
+    .modal h2 { color: var(--accent); font-size: 0.9rem; letter-spacing: 0.2em; margin-bottom: 8px; }
+    .modal p { font-size: 0.75rem; color: var(--muted); line-height: 1.6; margin-bottom: 20px; }
+    .modal-btns { display: flex; gap: 12px; }
+    .btn {
+      flex: 1; padding: 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); font-family: inherit;
+      font-size: 0.75rem; letter-spacing: 0.1em; cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn.primary:hover { background: #6d28d9; }
+    #modal-subtitle { font-size: 0.7rem; color: var(--accent2); margin-bottom: 4px; letter-spacing: 0.15em; }
+    #modal-memory-count { color: var(--accent); font-size: 1.4rem; font-weight: bold; margin: 16px 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="overlay">
+    <div id="top-bar">
+      <div id="title-block">
+        <h1>Echo Chamber</h1>
+        <p>SPATIAL AUDIO MEMORY PALACE</p>
+      </div>
+      <div id="status-panel">
+        <div class="label">STATUS</div>
+        <div class="row"><span class="key">memories</span><span class="val" id="sv-memories">0</span></div>
+        <div class="row"><span class="key">recording</span><span class="val" id="sv-recording">✕ OFF</span></div>
+        <div class="row"><span class="key">playback</span><span class="val" id="sv-playback">✕ OFF</span></div>
+        <div class="row"><span class="key">fps</span><span class="val" id="sv-fps">--</span></div>
+      </div>
+    </div>
+    <div id="instructions">
+      <span>[SPACE]</span> record &nbsp;·&nbsp; <span>[CLICK ECHO]</span> play memory &nbsp;·&nbsp; <span>[R]</span> toggle recording mode &nbsp;·&nbsp; <span>[F]</span> toggle first-person &nbsp;·&nbsp; <span>[T]</span> trigger all echoes
+    </div>
+  </div>
+  <div id="modal-bg">
+    <div class="modal" id="welcome-modal">
+      <div id="modal-subtitle">WELCOME TO</div>
+      <h2>ECHO CHAMBER</h2>
+      <p>A spatial memory palace in 3D. Your voice echoes through space — navigate to your memories and hear them play back from the direction they were recorded.</p>
+      <div id="modal-memory-count">0 echoes stored</div>
+      <div class="modal-btns">
+        <button class="btn" id="btn-demo">LOAD DEMO</button>
+        <button class="btn primary" id="btn-start">START FRESH</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    // ─── State ───────────────────────────────────────────────────────────────────
+    const memories = [];
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let recorder = null;
+    let recording = false;
+    let micStream = null;
+    let firstPerson = false;
+    let isDemo = false;
+    let frameCount = 0, lastFpsTime = performance.now(), fps = 0;
+
+    // Camera bob
+    let bobTime = 0;
+
+    // Mouse pos for raycasting
+    const mouse = new THREE.Vector2();
+    const raycaster = new THREE.Raycaster();
+
+    // ─── Scene Setup ────────────────────────────────────────────────────────────
+    const canvas = document.getElementById('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x06060f);
+    scene.fog = new THREE.FogExp2(0x06060f, 0.018);
+
+    const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 200);
+    camera.position.set(0, 2, 12);
+
+    // ─── Post Processing ───────────────────────────────────────────────────────
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.8, 0.4, 0.2);
+    composer.addPass(bloom);
+
+    // ─── Lighting ──────────────────────────────────────────────────────────────
+    scene.add(new THREE.AmbientLight(0x1a1a3a, 0.6));
+    const dirLight = new THREE.DirectionalLight(0x7c3aed, 0.4);
+    dirLight.position.set(5, 10, 5);
+    scene.add(dirLight);
+
+    // ─── Floor Grid ───────────────────────────────────────────────────────────
+    const gridHelper = new THREE.GridHelper(120, 60, 0x1a1a3a, 0x0d0d1a);
+    gridHelper.position.y = -3;
+    scene.add(gridHelper);
+
+    // Floor plane (subtle reflection)
+    const floorGeo = new THREE.PlaneGeometry(120, 120);
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x080814, roughness: 0.9, metalness: 0.1,
+      transparent: true, opacity: 0.5
+    });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -3.01;
+    scene.add(floor);
+
+    // ─── Stars ─────────────────────────────────────────────────────────────────
+    const starGeo = new THREE.BufferGeometry();
+    const starCount = 2000;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount * 3; i++) starPos[i] = (Math.random() - 0.5) * 300;
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0x8888cc, size: 0.15, sizeAttenuation: true });
+    scene.add(new THREE.Points(starGeo, starMat));
+
+    // ─── Echo Nodes ────────────────────────────────────────────────────────────
+    const echoGroup = new THREE.Group();
+    scene.add(echoGroup);
+
+    function buildEchoMesh(color) {
+      const group = new THREE.Group();
+      // Core orb
+      const coreGeo = new THREE.SphereGeometry(0.18, 16, 16);
+      const coreMat = new THREE.MeshStandardMaterial({
+        color, emissive: color, emissiveIntensity: 2.0, roughness: 0.1, metalness: 0.8
+      });
+      const core = new THREE.Mesh(coreGeo, coreMat);
+      group.add(core);
+      // Outer glow ring
+      const ringGeo = new THREE.TorusGeometry(0.3, 0.02, 8, 32);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color, emissive: color, emissiveIntensity: 1.2,
+        transparent: true, opacity: 0.7
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+      // Point light
+      const light = new THREE.PointLight(color, 1.5, 6);
+      group.add(light);
+      return { group, core, ring };
+    }
+
+    // ─── Waveform visualization on echo ─────────────────────────────────────
+    function updateEchoWaveform(mesh, analyser, time) {
+      if (!analyser) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / data.length;
+      const scale = 1 + avg / 128 * 0.3;
+      mesh.scale.setScalar(scale);
+    }
+
+    // ─── Audio Recording ────────────────────────────────────────────────────────
+    async function startRecording() {
+      if (recording) return;
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const source = audioCtx.createMediaStreamSource(micStream);
+        const analyserNode = audioCtx.createAnalyser();
+        analyserNode.fftSize = 256;
+        source.connect(analyserNode);
+
+        const chunks = [];
+        recorder = new MediaRecorder(micStream);
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+          saveMemory(audioBuffer, analyserNode);
+          if (micStream) micStream.getTracks().forEach(t => t.stop());
+        };
+        recorder.start();
+        recording = true;
+        document.getElementById('sv-recording').textContent = '● ON';
+        document.getElementById('sv-recording').className = 'val active';
+        document.getElementById('instructions').innerHTML =
+          '<span>[SPACE]</span> stop &nbsp;·&nbsp; <span>[CLICK ECHO]</span> play memory &nbsp;·&nbsp; <span>[R]</span> toggle recording mode &nbsp;·&nbsp; <span>[F]</span> toggle first-person &nbsp;·&nbsp; <span>[T]</span> trigger all echoes';
+        return analyserNode;
+      } catch (e) {
+        console.warn('Mic error:', e);
+        return null;
+      }
+    }
+
+    function stopRecording() {
+      if (!recording || !recorder) return;
+      recorder.stop();
+      recording = false;
+      document.getElementById('sv-recording').textContent = '✕ OFF';
+      document.getElementById('sv-recording').className = 'val';
+    }
+
+    function saveMemory(audioBuffer, analyser) {
+      const id = Date.now();
+      // Random position in space
+      const theta = Math.random() * Math.PI * 2;
+      const radius = 6 + Math.random() * 14;
+      const x = Math.cos(theta) * radius;
+      const z = Math.sin(theta) * radius;
+      const y = -2 + Math.random() * 6;
+
+      const hue = (id % 360) / 360;
+      const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+      const { group, core, ring } = buildEchoMesh(color);
+
+      group.position.set(x, y, z);
+      // Hover animation offset
+      group.userData = {
+        baseY: y,
+        hoverOffset: Math.random() * Math.PI * 2,
+        hoverSpeed: 0.5 + Math.random() * 0.5,
+        ring, core,
+        analyser: null,
+        id,
+        triggered: false,
+        triggerTime: 0,
+        pulseTime: 0
+      };
+
+      echoGroup.add(group);
+
+      memories.push({
+        id, audioBuffer, analyser,
+        position: new THREE.Vector3(x, y, z),
+        color, group, analyserNode: analyser
+      });
+
+      document.getElementById('sv-memories').textContent = memories.length;
+
+      // Animate spawn
+      gsapFloat(group, 0.4);
+    }
+
+    // Spawn animation
+    function gsapFloat(obj, duration) {
+      const startScale = 0.01;
+      obj.scale.setScalar(startScale);
+      const startTime = performance.now();
+      function animate() {
+        const t = Math.min((performance.now() - startTime) / 1000 / duration, 1);
+        const ease = 1 - Math.pow(1 - t, 3);
+        obj.scale.setScalar(startScale + (1 - startScale) * ease);
+        if (t < 1) requestAnimationFrame(animate);
+      }
+      animate();
+    }
+
+    // ─── Audio Playback ─────────────────────────────────────────────────────────
+    function playMemory(memory) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const source = audioCtx.createBufferSource();
+      source.buffer = memory.audioBuffer;
+
+      // Panner for 3D spatial audio
+      const panner = audioCtx.createPanner();
+      panner.panningModel = 'HRTF';
+      panner.distanceModel = 'inverse';
+      panner.refDistance = 1;
+      panner.maxDistance = 50;
+      panner.rolloffFactor = 1.2;
+      panner.setPosition(memory.position.x, memory.position.y, memory.position.z);
+
+      // Listener follows camera
+      const listener = audioCtx.listener;
+      if (listener.positionX) {
+        listener.positionX.setValueAtTime(camera.position.x, audioCtx.currentTime);
+        listener.positionY.setValueAtTime(camera.position.y, audioCtx.currentTime);
+        listener.positionZ.setValueAtTime(camera.position.z, audioCtx.currentTime);
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        listener.forwardX.setValueAtTime(fwd.x, audioCtx.currentTime);
+        listener.forwardY.setValueAtTime(fwd.y, audioCtx.currentTime);
+        listener.forwardZ.setValueAtTime(fwd.z, audioCtx.currentTime);
+        listener.upX.setValueAtTime(0, audioCtx.currentTime);
+        listener.upY.setValueAtTime(1, audioCtx.currentTime);
+        listener.upZ.setValueAtTime(0, audioCtx.currentTime);
+      }
+
+      source.connect(panner);
+      panner.connect(audioCtx.destination);
+      source.start();
+
+      // Visual: pulse the node
+      memory.triggered = true;
+      memory.triggerTime = performance.now();
+      memory.group.userData.pulseTime = performance.now();
+
+      document.getElementById('sv-playback').textContent = '● ON';
+      document.getElementById('sv-playback').className = 'val active';
+      setTimeout(() => {
+        document.getElementById('sv-playback').textContent = '✕ OFF';
+        document.getElementById('sv-playback').className = 'val';
+      }, source.buffer.duration * 1000 + 200);
+    }
+
+    function triggerAllEchoes() {
+      memories.forEach((m, i) => {
+        setTimeout(() => playMemory(m), i * 120);
+      });
+    }
+
+    // ─── Click to Play ──────────────────────────────────────────────────────────
+    canvas.addEventListener('click', (e) => {
+      if (isModalVisible()) return;
+      mouse.x = (e.clientX / innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(echoGroup.children, true);
+      if (hits.length > 0) {
+        let obj = hits[0].object;
+        while (obj.parent && obj.parent !== echoGroup) obj = obj.parent;
+        const mem = memories.find(m => m.group === obj);
+        if (mem) playMemory(mem);
+      }
+    });
+
+    // ─── Keyboard ───────────────────────────────────────────────────────────────
+    const keys = {};
+    document.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (e.code === 'Space' && !isModalVisible()) {
+        e.preventDefault();
+        if (recording) stopRecording(); else startRecording();
+      }
+      if (e.code === 'KeyR') {
+        if (recording) stopRecording(); else startRecording();
+      }
+      if (e.code === 'KeyF') {
+        firstPerson = !firstPerson;
+        if (firstPerson) {
+          controls.enabled = false;
+          canvas.requestPointerLock();
+        } else {
+          document.exitPointerLock();
+          controls.enabled = true;
+        }
+      }
+      if (e.code === 'KeyT' && !recording) triggerAllEchoes();
+    });
+    document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+    document.addEventListener('pointerlockchange', () => {
+      if (!document.pointerLockElement) { firstPerson = false; controls.enabled = true; }
+    });
+
+    // ─── Camera Controls ────────────────────────────────────────────────────────
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.target.set(0, 0, 0);
+    controls.maxDistance = 80;
+    controls.minDistance = 2;
+
+    // First-person mouse look
+    let yaw = 0, pitch = 0;
+    document.addEventListener('mousemove', e => {
+      if (firstPerson && document.pointerLockElement) {
+        yaw -= e.movementX * 0.002;
+        pitch -= e.movementY * 0.002;
+        pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+      }
+    });
+
+    // ─── Modal Helpers ─────────────────────────────────────────────────────────
+    function isModalVisible() {
+      return !document.getElementById('modal-bg').classList.contains('hidden');
+    }
+
+    // ─── Demo Memories ─────────────────────────────────────────────────────────
+    function loadDemo() {
+      const demoCount = 8;
+      for (let i = 0; i < demoCount; i++) {
+        const id = 1000 + i;
+        const theta = (i / demoCount) * Math.PI * 2;
+        const radius = 8 + Math.sin(i * 1.3) * 5;
+        const x = Math.cos(theta) * radius;
+        const z = Math.sin(theta) * radius;
+        const y = -1.5 + Math.sin(i * 0.7) * 4;
+
+        const hue = (i * 45) / 360;
+        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+        const { group } = buildEchoMesh(color);
+        group.position.set(x, y, z);
+        group.userData = {
+          baseY: y,
+          hoverOffset: i * 0.5,
+          hoverSpeed: 0.4 + Math.random() * 0.4,
+          ring: group.children[1],
+          core: group.children[0],
+          analyser: null,
+          id,
+          triggered: false,
+          triggerTime: 0,
+          pulseTime: 0
+        };
+        echoGroup.add(group);
+        memories.push({
+          id, audioBuffer: null, analyser: null,
+          position: new THREE.Vector3(x, y, z),
+          color, group, analyserNode: null,
+          isDemo: true
+        });
+        gsapFloat(group, 0.6 + i * 0.05);
+      }
+      document.getElementById('sv-memories').textContent = demoCount;
+      isDemo = true;
+    }
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+      document.getElementById('modal-bg').classList.add('hidden');
+      startRecording();
+    });
+    document.getElementById('btn-demo').addEventListener('click', () => {
+      document.getElementById('modal-bg').classList.add('hidden');
+      loadDemo();
+    });
+
+    // Update memory count in modal
+    function updateModalCount() {
+      document.getElementById('modal-memory-count').textContent = `${memories.length} echoes stored`;
+    }
+
+    // ─── Particle Burst on Trigger ─────────────────────────────────────────────
+    const particleSystems = [];
+    function spawnParticles(position, color) {
+      const count = 30;
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array(count * 3);
+      const vel = [];
+      for (let i = 0; i < count; i++) {
+        pos[i * 3] = position.x;
+        pos[i * 3 + 1] = position.y;
+        pos[i * 3 + 2] = position.z;
+        vel.push({
+          x: (Math.random() - 0.5) * 4,
+          y: (Math.random() - 0.5) * 4,
+          z: (Math.random() - 0.5) * 4
+        });
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({
+        color, size: 0.12, transparent: true, opacity: 1.0, sizeAttenuation: true
+      });
+      const points = new THREE.Points(geo, mat);
+      scene.add(points);
+      particleSystems.push({ points, vel, age: 0, maxAge: 1.2 });
+    }
+
+    // ─── Ambient Pulse Rings ────────────────────────────────────────────────────
+    const ringGeo = new THREE.TorusGeometry(1, 0.01, 8, 32);
+    const ambientRings = [];
+    function spawnAmbientRing(position, color) {
+      const mat = new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.5, side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(ringGeo, mat);
+      mesh.position.copy(position);
+      scene.add(mesh);
+      ambientRings.push({ mesh, age: 0, maxAge: 1.5, scale: 0.1 });
+    }
+
+    // ─── Animate ───────────────────────────────────────────────────────────────
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      const elapsed = clock.getElapsedTime();
+
+      // FPS counter
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastFpsTime = now;
+        document.getElementById('sv-fps').textContent = fps;
+      }
+
+      // Camera movement (WASD)
+      if (firstPerson) {
+        const speed = 8 * delta;
+        const dir = new THREE.Vector3();
+        if (keys['KeyW'] || keys['ArrowUp']) dir.z -= 1;
+        if (keys['KeyS'] || keys['ArrowDown']) dir.z += 1;
+        if (keys['KeyA'] || keys['ArrowLeft']) dir.x -= 1;
+        if (keys['KeyD'] || keys['ArrowRight']) dir.x += 1;
+        if (dir.length() > 0) {
+          dir.normalize().applyQuaternion(camera.quaternion);
+          camera.position.addScaledVector(dir, speed);
+        }
+        bobTime += delta * 6;
+        camera.position.y = 2 + Math.sin(bobTime) * 0.05;
+      } else {
+        controls.update();
+      }
+
+      // Animate echo nodes
+      echoGroup.children.forEach((node, idx) => {
+        const ud = node.userData;
+        if (!ud.baseY !== undefined) {
+          node.position.y = ud.baseY + Math.sin(elapsed * ud.hoverSpeed + ud.hoverOffset) * 0.25;
+          ud.ring.rotation.z = elapsed * 0.8 + idx;
+        }
+        // Pulse after trigger
+        if (ud.pulseTime > 0) {
+          const t = (performance.now() - ud.pulseTime) / 1000;
+          if (t < 0.6) {
+            const s = 1 + Math.sin(t * 20) * 0.15 * (1 - t / 0.6);
+            node.scale.setScalar(s);
+          } else {
+            node.scale.setScalar(1);
+            ud.pulseTime = 0;
+          }
+        }
+      });
+
+      // Animate particle systems
+      for (let i = particleSystems.length - 1; i >= 0; i--) {
+        const ps = particleSystems[i];
+        ps.age += delta;
+        if (ps.age >= ps.maxAge) {
+          scene.remove(ps.points);
+          particleSystems.splice(i, 1);
+          continue;
+        }
+        const progress = ps.age / ps.maxAge;
+        ps.points.material.opacity = 1 - progress;
+        const pos = ps.points.geometry.attributes.position.array;
+        for (let j = 0; j < ps.vel.length; j++) {
+          pos[j * 3] += ps.vel[j].x * delta;
+          pos[j * 3 + 1] += ps.vel[j].y * delta - 2 * delta * ps.age;
+          pos[j * 3 + 2] += ps.vel[j].z * delta;
+        }
+        ps.points.geometry.attributes.position.needsUpdate = true;
+      }
+
+      // Animate ambient rings
+      for (let i = ambientRings.length - 1; i >= 0; i--) {
+        const ar = ambientRings[i];
+        ar.age += delta;
+        if (ar.age >= ar.maxAge) {
+          scene.remove(ar.mesh);
+          ambientRings.splice(i, 1);
+          continue;
+        }
+        const t = ar.age / ar.maxAge;
+        ar.mesh.scale.setScalar(1 + t * 3);
+        ar.mesh.material.opacity = 0.5 * (1 - t);
+      }
+
+      composer.render();
+    }
+    animate();
+
+    // ─── Resize ─────────────────────────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+    });
+
+    // Prevent context menu on right-click
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+  </script>
+</body>
+</html>

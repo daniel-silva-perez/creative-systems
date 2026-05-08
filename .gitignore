@@ -1,0 +1,6 @@
+# auto-generated build artifacts
+apps/**/node_modules/
+apps/**/dist/
+.preview/
+.chrome-data/
+.DS_Store

@@ -1,0 +1,11 @@
+{
+  "name": "creative-systems",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "python3 -m http.server 4321",
+    "serve": "python3 -m http.server 4321",
+    "check:apps": "python3 tools/check_apps.py"
+  }
+}

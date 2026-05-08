@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CANVASync — Real-Time Collaborative Whiteboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    overflow: hidden;
+    font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  }
+  #toolbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 52px;
+    background: rgba(10,10,10,0.95);
+    border-bottom: 1px solid #1a1a1a;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 16px;
+    z-index: 20;
+    backdrop-filter: blur(12px);
+  }
+  #toolbar h1 {
+    font-size: 12px;
+    letter-spacing: 4px;
+    color: #fff;
+    font-weight: 400;
+    text-transform: uppercase;
+    margin-right: 8px;
+  }
+  .sep { width: 1px; height: 24px; background: #1e1e1e; }
+  .tool-btn {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    border: 1px solid #1e1e1e;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #444;
+    font-size: 16px;
+    transition: all 0.15s;
+  }
+  .tool-btn:hover { border-color: #333; color: #fff; }
+  .tool-btn.active { border-color: #fff; color: #fff; background: rgba(255,255,255,0.08); }
+  .color-pick-wrap { display: flex; gap: 5px; align-items: center; }
+  .color-swatch {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.1s;
+  }
+  .color-swatch:hover { transform: scale(1.2); }
+  .color-swatch.active { border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.3); }
+  #size-slider {
+    -webkit-appearance: none;
+    width: 80px; height: 2px;
+    background: #1e1e1e;
+    border-radius: 2px;
+    outline: none;
+  }
+  #size-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+  }
+  #canvas-wrap {
+    position: fixed;
+    top: 52px; left: 0; right: 0; bottom: 0;
+  }
+  #main-canvas {
+    display: block;
+    width: 100%; height: 100%;
+    cursor: crosshair;
+  }
+  #cursor-layer {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  .remote-cursor {
+    position: absolute;
+    pointer-events: none;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transform: translate(-2px, -14px);
+    white-space: nowrap;
+    font-family: 'SF Mono', monospace;
+    opacity: 0.85;
+    letter-spacing: 1px;
+  }
+  #status-bar {
+    position: fixed;
+    bottom: 12px;
+    left: 16px;
+    font-size: 10px;
+    color: #333;
+    letter-spacing: 2px;
+    pointer-events: none;
+  }
+  #user-count {
+    position: fixed;
+    bottom: 12px;
+    right: 16px;
+    font-size: 10px;
+    color: #333;
+    letter-spacing: 2px;
+    pointer-events: none;
+  }
+  #system-msg {
+    position: fixed;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 10px;
+    color: #0f8;
+    letter-spacing: 3px;
+    opacity: 0;
+    transition: opacity 0.4s;
+    pointer-events: none;
+    text-transform: uppercase;
+  }
+  #system-msg.show { opacity: 1; }
+  .cursor-line {
+    position: absolute;
+    top: 0; left: 0;
+    height: 1px;
+    background: currentColor;
+    transform-origin: left center;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>CANVASync</h1>
+  <div class="sep"></div>
+  <div class="color-pick-wrap" id="color-palette"></div>
+  <div class="sep"></div>
+  <button class="tool-btn active" id="pen-tool" title="Pen (P)" onclick="setTool('pen')">✏️</button>
+  <button class="tool-btn" id="line-tool" title="Line (L)" onclick="setTool('line')">📏</button>
+  <button class="tool-btn" id="eraser-tool" title="Eraser (E)" onclick="setTool('eraser')">🧹</button>
+  <button class="tool-btn" id="fill-tool" title="Fill canvas (G)" onclick="fillCanvas()">🪣</button>
+  <button class="tool-btn" id="clear-tool" title="Clear (C)" onclick="clearCanvas()">🗑</button>
+  <div class="sep"></div>
+  <input type="range" min="1" max="32" value="3" id="size-slider" title="Brush size">
+  <div class="sep"></div>
+  <div id="tool-label" style="font-size:10px;color:#333;letter-spacing:2px;">PEN</div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="main-canvas"></canvas>
+  <canvas id="cursor-layer"></canvas>
+</div>
+
+<div id="system-msg"></div>
+<div id="status-bar">WS CONNECTING...</div>
+<div id="user-count"></div>
+
+<script>
+// ─── Config ─────────────────────────────────────────────────────────────────
+const WS_URL = `ws://${location.hostname}:7895?uid=${Math.random().toString(36).slice(2,8)}`;
+const COLORS = ["#ffffff","#ff4444","#ff8800","#ffee00","#00ff66","#00ccff","#4488ff","#aa44ff","#ff44aa","#cccccc","#666666","#000000"];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let ws;
+let userId = '';
+let currentColor = COLORS[0];
+let brushSize = 3;
+let currentTool = 'pen';
+let isDrawing = false;
+let lastX = 0, lastY = 0;
+let startLineX = 0, startLineY = 0;
+const remoteCursors = new Map(); // userId -> { el, x, y, color }
+
+// ─── Canvas setup ──────────────────────────────────────────────────────────
+const canvas = document.getElementById('main-canvas');
+const ctx = canvas.getContext('2d');
+const cursorCanvas = document.getElementById('cursor-layer');
+const cursorCtx = cursorCanvas.getContext('2d');
+let dpr = 1;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio, 2);
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width = wrap.clientWidth * dpr;
+  canvas.height = wrap.clientHeight * dpr;
+  canvas.style.width = wrap.clientWidth + 'px';
+  canvas.style.height = wrap.clientHeight + 'px';
+  cursorCanvas.width = wrap.clientWidth * dpr;
+  cursorCanvas.height = wrap.clientHeight * dpr;
+  cursorCanvas.style.width = wrap.clientWidth + 'px';
+  cursorCanvas.style.height = wrap.clientHeight + 'px';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Color palette ─────────────────────────────────────────────────────────
+const palette = document.getElementById('color-palette');
+COLORS.forEach((c, i) => {
+  const sw = document.createElement('div');
+  sw.className = 'color-swatch' + (i === 0 ? ' active' : '');
+  sw.style.background = c;
+  sw.onclick = () => {
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    sw.classList.add('active');
+    currentColor = c;
+    if (currentTool === 'eraser') setTool('pen');
+  };
+  palette.appendChild(sw);
+});
+
+// ─── Tools ─────────────────────────────────────────────────────────────────
+function setTool(tool) {
+  currentTool = tool;
+  ['pen','line','eraser'].forEach(t => {
+    document.getElementById(t + '-tool').classList.toggle('active', t === tool);
+  });
+  document.getElementById('tool-label').textContent = tool.toUpperCase();
+  canvas.style.cursor = tool === 'eraser' ? 'cell' : tool === 'line' ? 'crosshair' : 'crosshair';
+}
+
+document.getElementById('size-slider').oninput = e => {
+  brushSize = parseInt(e.target.value);
+};
+
+document.getElementById('clear-tool').onclick = clearCanvas;
+document.getElementById('fill-tool').onclick = fillCanvas;
+
+function clearCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ws && ws.send(JSON.stringify({ type: 'clear' }));
+  showMsg('Canvas cleared');
+}
+
+function fillCanvas() {
+  ctx.fillStyle = currentColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ws && ws.send(JSON.stringify({ type: 'fill', color: currentColor }));
+}
+
+function getPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * dpr,
+    y: (e.clientY - r.top) * dpr,
+  };
+}
+
+function drawSegment(x1, y1, x2, y2, color, size) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = size;
+  ctx.stroke();
+}
+
+// ─── Mouse events ───────────────────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  isDrawing = true;
+  const { x, y } = getPos(e);
+  lastX = x; lastY = y;
+  startLineX = x; startLineY = y;
+
+  if (currentTool === 'line') {
+    // preview handled in mousemove
+  } else if (currentTool === 'eraser') {
+    ctx.globalCompositeOperation = 'destination-out';
+  } else {
+    ctx.globalCompositeOperation = 'source-over';
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const { x, y } = getPos(e);
+
+  // Send cursor update
+  ws && ws.send(JSON.stringify({ type: 'cursor', x: e.clientX, y: e.clientY }));
+
+  if (!isDrawing) return;
+
+  if (currentTool === 'pen' || currentTool === 'eraser') {
+    drawSegment(lastX, lastY, x, y, currentTool === 'eraser' ? 'rgba(0,0,0,1)' : currentColor, brushSize);
+    ws && ws.send(JSON.stringify({ type: 'draw', x, y, color: currentColor, size: brushSize }));
+  }
+  lastX = x; lastY = y;
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (isDrawing && currentTool === 'line') {
+    const { x, y } = getPos(e);
+    drawSegment(startLineX, startLineY, x, y, currentColor, brushSize);
+    ws && ws.send(JSON.stringify({ type: 'line', x: e.clientX, y: e.clientY, x2: e.clientX, y2: e.clientY, color: currentColor, size: brushSize }));
+  }
+  if (currentTool === 'eraser') ctx.globalCompositeOperation = 'source-over';
+  isDrawing = false;
+});
+
+canvas.addEventListener('mouseleave', () => { isDrawing = false; });
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const mouseEv = new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY });
+  canvas.dispatchEvent(mouseEv);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const mouseEv = new MouseEvent('mousemove', { clientX: touch.clientX, clientY: touch.clientY });
+  canvas.dispatchEvent(mouseEv);
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  canvas.dispatchEvent(new MouseEvent('mouseup'));
+}, { passive: false });
+
+// ─── Keyboard shortcuts ────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'p' || e.key === 'P') setTool('pen');
+  if (e.key === 'l' || e.key === 'L') setTool('line');
+  if (e.key === 'e' || e.key === 'E') setTool('eraser');
+  if (e.key === 'g' || e.key === 'G') fillCanvas();
+  if (e.key === 'c' || e.key === 'C') clearCanvas();
+});
+
+// ─── WebSocket ─────────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    document.getElementById('status-bar').textContent = 'LIVE';
+    document.getElementById('status-bar').style.color = '#0f8';
+  };
+
+  ws.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+
+    if (data.type === 'init') {
+      userId = data.userId;
+      document.title = `CANVASync — ${userId}`;
+      document.getElementById('status-bar').textContent = userId.toUpperCase();
+      // Set initial color from server
+      currentColor = data.color;
+    }
+
+    if (data.type === 'draw') {
+      if (data.userId === userId) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (data.x - rect.left) * dpr;
+      const y = (data.y - rect.top) * dpr;
+      const px = (data.x2 - rect.left) * dpr;
+      const py = (data.y2 - rect.top) * dpr;
+      drawSegment(px, py, x, y, data.color || currentColor, data.size || brushSize);
+    }
+
+    if (data.type === 'line') {
+      if (data.userId === userId) return;
+      const rect = canvas.getBoundingClientRect();
+      drawSegment(
+        (data.x - rect.left) * dpr, (data.y - rect.top) * dpr,
+        (data.x2 - rect.left) * dpr, (data.y2 - rect.top) * dpr,
+        data.color || currentColor, data.size || brushSize
+      );
+    }
+
+    if (data.type === 'clear') {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (data.userId !== userId) showMsg('Canvas cleared by someone');
+    }
+
+    if (data.type === 'fill') {
+      ctx.fillStyle = data.color || currentColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    if (data.type === 'cursor') {
+      if (data.userId === userId) return;
+      moveCursor(data.userId, data.x, data.y, data.color);
+    }
+
+    if (data.type === 'system') {
+      showMsg(data.text);
+      document.getElementById('user-count').textContent = `${data.userCount} online`;
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById('status-bar').textContent = 'RECONNECTING...';
+    document.getElementById('status-bar').style.color = '#f44';
+    setTimeout(connect, 2000);
+  };
+}
+
+connect();
+
+// ─── Remote cursors ────────────────────────────────────────────────────────
+function moveCursor(uid, x, y, color) {
+  if (!remoteCursors.has(uid)) {
+    const el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.textContent = uid;
+    el.style.color = color || '#fff';
+    el.style.background = color || '#fff';
+    document.getElementById('canvas-wrap').appendChild(el);
+    remoteCursors.set(uid, { el });
+  }
+  const cursor = remoteCursors.get(uid);
+  cursor.x = x; cursor.y = y;
+  cursor.el.style.left = x + 'px';
+  cursor.el.style.top = y + 'px';
+  cursor.el.style.color = color || '#fff';
+  cursor.el.style.background = color || '#fff';
+}
+
+// Clean up stale cursors every 10s
+setInterval(() => {
+  const now = Date.now();
+  for (const [uid, cursor] of remoteCursors) {
+    // keep alive while connected
+  }
+}, 10000);
+
+// ─── System messages ────────────────────────────────────────────────────────
+let msgTimer;
+function showMsg(text) {
+  const el = document.getElementById('system-msg');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+</script>
+</body>
+</html>

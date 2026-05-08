@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sonic Bloom — Audio Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+  }
+  #controls {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 10;
+    transition: opacity 0.4s ease;
+  }
+  #controls.hidden { opacity: 0; pointer-events: none; }
+  #controls:hover { opacity: 1; }
+  .btn {
+    background: rgba(0,0,0,0.7);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    backdrop-filter: blur(10px);
+  }
+  .btn:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.4); }
+  .btn.active { background: rgba(255,255,255,0.2); border-color: #fff; color: #fff; }
+  .preset-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .preset-btn {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.2);
+    cursor: pointer;
+    font-size: 9px;
+    transition: all 0.2s;
+  }
+  .preset-btn:hover { transform: scale(1.2); border-color: #fff; }
+  .slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+  .slider-wrap label {
+    color: rgba(255,255,255,0.5);
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 80px; height: 2px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+  }
+  #startOverlay {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    z-index: 100;
+    transition: opacity 0.8s ease;
+  }
+  #startOverlay.fade { opacity: 0; pointer-events: none; }
+  #startOverlay h1 {
+    font-size: clamp(24px, 6vw, 56px);
+    color: #fff;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+    font-weight: 300;
+  }
+  #startOverlay p {
+    color: rgba(255,255,255,0.4);
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .start-btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.4);
+    color: #fff;
+    padding: 16px 48px;
+    border-radius: 30px;
+    cursor: pointer;
+    font-size: 13px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    transition: all 0.3s;
+    backdrop-filter: blur(10px);
+  }
+  .start-btn:hover { background: rgba(255,255,255,0.1); border-color: #fff; }
+  .orb {
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #fff, #0af);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.15); opacity: 1; }
+  }
+  #modeInfo {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.3);
+    font-size: 10px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  #waveformStrip {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 50px;
+    pointer-events: none;
+    opacity: 0.4;
+  }
+</style>
+</head>
+<body>
+
+<div id="startOverlay">
+  <div class="orb"></div>
+  <h1>Sonic Bloom</h1>
+  <p>Generative Audio Visualizer</p>
+  <button class="start-btn" onclick="app.start()">Launch</button>
+</div>
+
+<canvas id="main"></canvas>
+<canvas id="glow"></canvas>
+
+<div id="controls" class="hidden">
+  <button class="btn" id="micBtn" onclick="app.toggleMic()">Use Mic</button>
+  <button class="btn" id="fileBtn" onclick="document.getElementById('fileInput').click()">Load File</button>
+  <input type="file" id="fileInput" accept="audio/*" style="display:none" onchange="app.loadFile(event)">
+  <div class="slider-wrap">
+    <label>Intensity</label>
+    <input type="range" min="0.2" max="3" step="0.1" value="1.2" id="intensitySlider" oninput="app.setIntensity(this.value)">
+  </div>
+  <div class="slider-wrap">
+    <label>Trail</label>
+    <input type="range" min="1" max="60" step="1" value="12" id="trailSlider" oninput="app.setTrail(this.value)">
+  </div>
+  <div class="preset-row">
+    <button class="preset-btn" style="background:#0066aa" title="Ocean" onclick="app.setPreset('ocean')"></button>
+    <button class="preset-btn" style="background:#ff4400" title="Fire" onclick="app.setPreset('fire')"></button>
+    <button class="preset-btn" style="background:#00ff88" title="Aurora" onclick="app.setPreset('aurora')"></button>
+    <button class="preset-btn" style="background:#ffffff" title="Stardust" onclick="app.setPreset('stardust')"></button>
+    <button class="preset-btn" style="background:linear-gradient(45deg,#f0f,#0ff)" title="Cosmic" onclick="app.setPreset('cosmic')"></button>
+  </div>
+</div>
+
+<div id="modeInfo">drop audio file or click to begin</div>
+<canvas id="waveformStrip"></canvas>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Sonic Bloom — Core Engine
+// ─────────────────────────────────────────────────────────────────────────────
+
+const app = {
+  audioCtx: null,
+  analyser: null,
+  source: null,
+  particleCount: 700,
+  particles: [],
+  intensity: 1.2,
+  trailAlpha: 12,  // frames for trail decay (lower = longer trails)
+  preset: 'cosmic',
+  running: false,
+  animId: null,
+  mouseX: 0, mouseY: 0,
+  bassEnergy: 0, midEnergy: 0, highEnergy: 0,
+  globalRotation: 0,
+  bassDecay: 0.92, midDecay: 0.95, highDecay: 0.95,
+  clicks: [],
+
+  // Preset color themes (base hues)
+  presets: {
+    ocean:    { baseHue: 200, hueRange: 60,  sat: 80, lite: 60, trailAlpha: 18 },
+    fire:     { baseHue: 15,  hueRange: 40,  sat: 100, lite: 60, trailAlpha: 6 },
+    aurora:   { baseHue: 140, hueRange: 100, sat: 85, lite: 55, trailAlpha: 22 },
+    stardust: { baseHue: 220, hueRange: 40,  sat: 20, lite: 90, trailAlpha: 35 },
+    cosmic:   { baseHue: 280, hueRange: 180, sat: 90, lite: 65, trailAlpha: 14 },
+  },
+
+  start() {
+    document.getElementById('startOverlay').classList.add('fade');
+    setTimeout(() => {
+      document.getElementById('startOverlay').style.display = 'none';
+    }, 800);
+    this.running = true;
+    this.initAudio();
+    this.initCanvas();
+    this.initParticles();
+    this.bindEvents();
+    this.loop();
+  },
+
+  async initAudio() {
+    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    this.analyser = this.audioCtx.createAnalyser();
+    this.analyser.fftSize = 2048;
+    this.analyser.smoothingTimeConstant = 0.78;
+    this.analyser.minDecibels = -90;
+    this.analyser.maxDecibels = -10;
+    this.bufferLength = this.analyser.frequencyBinCount;
+    this.freqData = new Uint8Array(this.bufferLength);
+    this.waveData = new Uint8Array(this.bufferLength);
+    this.analyser.connect(this.audioCtx.destination);
+  },
+
+  initCanvas() {
+    this.mainCanvas = document.getElementById('main');
+    this.glowCanvas = document.getElementById('glow');
+    this.waveCanvas = document.getElementById('waveformStrip');
+    this.ctx = this.mainCanvas.getContext('2d');
+    this.glowCtx = this.glowCanvas.getContext('2d');
+    this.waveCtx = this.waveCanvas.getContext('2d');
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+  },
+
+  resize() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    [this.mainCanvas, this.glowCanvas].forEach(c => {
+      c.width = W * dpr; c.height = H * dpr;
+      c.style.width = W + 'px'; c.style.height = H + 'px';
+    });
+    this.W = W; this.H = H; this.dpr = dpr;
+    this.waveCanvas.width = W * dpr;
+    this.waveCanvas.height = 50 * dpr;
+    this.waveCanvas.style.width = W + 'px';
+    this.waveCanvas.style.height = '50px';
+  },
+
+  initParticles() {
+    this.particles = [];
+    for (let i = 0; i < this.particleCount; i++) {
+      this.particles.push(this.mkParticle(Math.random() * this.W, Math.random() * this.H));
+    }
+  },
+
+  mkParticle(x, y, burst = false) {
+    const band = Math.random() < 0.3 ? 'bass' : Math.random() < 0.5 ? 'mid' : 'high';
+    return {
+      x: x ?? this.W / 2, y: y ?? this.H / 2,
+      vx: (Math.random() - 0.5) * (burst ? 12 : 2),
+      vy: (Math.random() - 0.5) * (burst ? 12 : 2),
+      size: burst ? Math.random() * 5 + 2 : Math.random() * 2 + 0.5,
+      life: burst ? Math.random() * 40 + 20 : Math.random() * 200 + 100,
+      maxLife: burst ? 60 : 300,
+      hue: 0, sat: 80, lite: 60,
+      band,
+      trail: [],
+    };
+  },
+
+  setPreset(name) {
+    this.preset = name;
+  },
+
+  setIntensity(v) { this.intensity = parseFloat(v); },
+  setTrail(v) { this.trailAlpha = 60 - parseInt(v); },
+
+  bindEvents() {
+    // Click burst
+    window.addEventListener('click', e => {
+      if (e.target.tagName === 'CANVAS' && e.target.id !== 'main') return;
+      if (e.target.closest('#controls')) return;
+      for (let i = 0; i < 30; i++) {
+        this.particles.push(this.mkParticle(e.clientX, e.clientY, true));
+      }
+      if (this.particles.length > this.particleCount + 200) {
+        this.particles.splice(this.particleCount, 100);
+      }
+    });
+
+    // Double-click toggle controls
+    window.addEventListener('dblclick', e => {
+      if (e.target.closest('#controls') || e.target.closest('#startOverlay')) return;
+      document.getElementById('controls').classList.toggle('hidden');
+    });
+
+    // Drag-drop
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', e => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith('audio/')) this.loadFile({ target: { files: [file] } });
+    });
+
+    // ESC to reset
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { this.initParticles(); this.globalRotation = 0; }
+    });
+
+    window.addEventListener('mousemove', e => {
+      this.mouseX = e.clientX; this.mouseY = e.clientY;
+    });
+  },
+
+  async toggleMic() {
+    const btn = document.getElementById('micBtn');
+    if (this.source && this.source._mic) {
+      this.source._mic.getTracks().forEach(t => t.stop());
+      this.source.disconnect();
+      this.source = null;
+      btn.textContent = 'Use Mic'; btn.classList.remove('active');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.source = this.audioCtx.createMediaStreamSource(stream);
+      this.source._mic = stream;
+      this.source.connect(this.analyser);
+      btn.textContent = 'Stop Mic'; btn.classList.add('active');
+    } catch (e) { console.error('Mic denied', e); }
+  },
+
+  async loadFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+    if (this.source) { try { this.source.disconnect(); } catch(e){} }
+    const buf = await file.arrayBuffer();
+    const decoded = await this.audioCtx.decodeAudioData(buf);
+    const src = this.audioCtx.createBufferSource();
+    src.buffer = decoded;
+    src.loop = true;
+    src.connect(this.analyser);
+    src.start();
+    this.source = src;
+    document.getElementById('modeInfo').textContent = file.name;
+  },
+
+  // ── Main render loop ───────────────────────────────────────────────────────
+  loop() {
+    this.animId = requestAnimationFrame(() => this.loop());
+    this.update();
+    this.render();
+  },
+
+  update() {
+    if (!this.analyser) return;
+    this.analyser.getByteFrequencyData(this.freqData);
+    this.analyser.getByteTimeDomainData(this.waveData);
+
+    const p = this.presets[this.preset] || this.presets.cosmic;
+    const W = this.W, H = this.H;
+    const cx = W / 2, cy = H / 2;
+    const freqData = this.freqData;
+    const bufLen = this.bufferLength;
+
+    // Energy bands
+    const b0 = this.freqAvg(0, 4);       // sub-bass
+    const b1 = this.freqAvg(4, 12);     // bass
+    const b2 = this.freqAvg(12, 30);    // low-mid
+    const b3 = this.freqAvg(30, 80);    // mid
+    const b4 = this.freqAvg(80, 200);   // high-mid
+    const b5 = this.freqAvg(200, 512); // treble
+
+    this.bassEnergy = this.bassEnergy * this.bassDecay + b1 * (1 - this.bassDecay);
+    this.midEnergy = this.midEnergy * this.midDecay + b3 * (1 - this.midDecay);
+    this.highEnergy = this.highEnergy * this.highDecay + b5 * (1 - this.highDecay);
+
+    const int = this.intensity;
+    const globalForce = this.bassEnergy * int;
+
+    // Centrifuge: bass rotates the whole field
+    this.globalRotation += this.bassEnergy * 0.0008 * int;
+
+    // ── Update particles ──────────────────────────────────────────────────
+    for (let i = 0; i < this.particles.length; i++) {
+      const pt = this.particles[i];
+
+      // Apply global rotation
+      const cosR = Math.cos(this.globalRotation);
+      const sinR = Math.sin(this.globalRotation);
+      const dx = pt.x - cx, dy = pt.y - cy;
+      pt.x = cx + dx * cosR - dy * sinR;
+      pt.y = cy + dx * sinR + dy * cosR;
+
+      // Frequency mapping per band
+      let forceMult = 0;
+      let forceAngle = 0;
+      let vxAdd = 0, vyAdd = 0;
+      let sizePulse = 0;
+      let hueShift = 0;
+
+      const idx = Math.floor((pt.band === 'bass' ? b1 : pt.band === 'mid' ? b3 : b5) / 255 * (pt.band === 'bass' ? 12 : pt.band === 'mid' ? 80 : 200));
+      const bandVal = idx < bufLen ? freqData[Math.min(idx, bufLen - 1)] / 255 : 0;
+
+      if (pt.band === 'bass') {
+        // Bass: radial explosion from center
+        const angle = Math.atan2(pt.y - cy, pt.x - cx);
+        const dist = Math.hypot(pt.x - cx, pt.y - cy) + 1;
+        forceMult = bandVal * 6 * int;
+        vxAdd = Math.cos(angle) * forceMult;
+        vyAdd = Math.sin(angle) * forceMult;
+        sizePulse = bandVal * 4;
+        hueShift = b0 / 255 * 30;
+        pt.sat = 100; pt.lite = 50 + bandVal * 30;
+      } else if (pt.band === 'mid') {
+        // Mid: swirling vortex
+        const angle = Math.atan2(pt.y - cy, pt.x - cx);
+        const dist = Math.hypot(pt.x - cx, pt.y - cy) + 1;
+        forceMult = bandVal * 2.5 * int;
+        const spin = (this.midEnergy * 0.001) + 0.5;
+        vxAdd = Math.cos(angle + spin) * forceMult + Math.sin(pt.y * 0.01 + this.midEnergy * 0.05) * bandVal * 3;
+        vyAdd = Math.sin(angle + spin) * forceMult + Math.cos(pt.x * 0.01 + this.midEnergy * 0.05) * bandVal * 3;
+        sizePulse = bandVal * 2;
+        hueShift = -b2 / 255 * 50;
+        pt.sat = 85; pt.lite = 55 + bandVal * 25;
+      } else {
+        // High: starfield threads
+        vxAdd = (Math.random() - 0.5) * bandVal * 1.5 * int;
+        vyAdd = (Math.random() - 0.5) * bandVal * 1.5 * int;
+        // Connect nearby high-freq particles with lines
+        sizePulse = bandVal * 0.8;
+        hueShift = b4 / 255 * 60;
+        pt.sat = 30 + bandVal * 50; pt.lite = 75 + bandVal * 20;
+      }
+
+      pt.vx += vxAdd;
+      pt.vy += vyAdd;
+      pt.vx *= 0.96; pt.vy *= 0.96;
+
+      // Center gravity (weak, unless bass is pumping)
+      const grav = 0.01 + globalForce * 0.003;
+      const angleToCtr = Math.atan2(cy - pt.y, cx - pt.x);
+      pt.vx += Math.cos(angleToCtr) * grav;
+      pt.vy += Math.sin(angleToCtr) * grav;
+
+      // Mouse interaction
+      const mdist = Math.hypot(pt.x - this.mouseX, pt.y - this.mouseY);
+      if (mdist < 120) {
+        const push = (120 - mdist) / 120 * 0.8;
+        pt.vx += (pt.x - this.mouseX) / mdist * push;
+        pt.vy += (pt.y - this.mouseY) / mdist * push;
+      }
+
+      pt.x += pt.vx;
+      pt.y += pt.vy;
+      pt.size = Math.max(0.3, pt.size + sizePulse * 0.05);
+      pt.hue = (p.baseHue + hueShift + Math.random() * p.hueRange) % 360;
+
+      pt.life--;
+      if (pt.life <= 0 || pt.x < -50 || pt.x > W + 50 || pt.y < -50 || pt.y > H + 50) {
+        // Respawn at edge
+        const edge = Math.floor(Math.random() * 4);
+        if (edge === 0) { pt.x = 0; pt.y = Math.random() * H; }
+        else if (edge === 1) { pt.x = W; pt.y = Math.random() * H; }
+        else if (edge === 2) { pt.x = Math.random() * W; pt.y = 0; }
+        else { pt.x = Math.random() * W; pt.y = H; }
+        pt.vx = (Math.random() - 0.5) * 2;
+        pt.vy = (Math.random() - 0.5) * 2;
+        pt.life = Math.random() * 200 + 100;
+        pt.size = Math.random() * 2 + 0.5;
+        pt.band = Math.random() < 0.3 ? 'bass' : Math.random() < 0.5 ? 'mid' : 'high';
+      }
+
+      // Trail
+      pt.trail.push({ x: pt.x, y: pt.y });
+      if (pt.trail.length > 18) pt.trail.shift();
+    }
+
+    // Waveform strip
+    this.drawWaveform();
+  },
+
+  freqAvg(start, end) {
+    let sum = 0;
+    for (let i = start; i < end && i < this.bufferLength; i++) sum += this.freqData[i];
+    return sum / (end - start);
+  },
+
+  render() {
+    const ctx = this.ctx;
+    const glowCtx = this.glowCtx;
+    const W = this.W, H = this.H;
+    const p = this.presets[this.preset];
+
+    // Glow canvas: bloom effect layer
+    glowCtx.fillStyle = 'rgba(0,0,0,0.05)';
+    glowCtx.fillRect(0, 0, W, H);
+
+    // Main canvas: background
+    ctx.fillStyle = `rgba(0,0,0,${1 / this.trailAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // ── Draw high-freq connection threads ──────────────────────────────────
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    for (let i = 0; i < this.particles.length; i++) {
+      const pt = this.particles[i];
+      if (pt.band !== 'high' || pt.life < 50) continue;
+      for (let j = i + 1; j < Math.min(i + 20, this.particles.length); j++) {
+        const pt2 = this.particles[j];
+        if (pt2.band !== 'high') continue;
+        const dist = Math.hypot(pt.x - pt2.x, pt.y - pt2.y);
+        if (dist < 40) {
+          ctx.beginPath();
+          ctx.moveTo(pt.x, pt.y);
+          ctx.lineTo(pt2.x, pt2.y);
+          ctx.strokeStyle = `hsla(${pt.hue},${pt.sat}%,${pt.lite}%,${(1 - dist / 40) * 0.3})`;
+          ctx.lineWidth = 0.4;
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    // ── Draw particles ────────────────────────────────────────────────────
+    for (const pt of this.particles) {
+      const lifeRatio = pt.life / pt.maxLife;
+      const alpha = Math.min(1, lifeRatio * 2) * 0.8;
+
+      // Glow layer
+      glowCtx.beginPath();
+      glowCtx.arc(pt.x, pt.y, pt.size * 4, 0, Math.PI * 2);
+      glowCtx.fillStyle = `hsla(${pt.hue},${pt.sat}%,${pt.lite}%,${alpha * 0.15})`;
+      glowCtx.fill();
+
+      // Main dot
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${pt.hue},${pt.sat}%,${pt.lite}%,${alpha})`;
+      ctx.fill();
+
+      // Bright inner core
+      if (pt.size > 2) {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, pt.size * 0.5, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${pt.hue},30%,95%,${alpha})`;
+        ctx.fill();
+      }
+
+      // Trail
+      if (pt.trail.length > 2) {
+        ctx.beginPath();
+        ctx.moveTo(pt.trail[0].x, pt.trail[0].y);
+        for (let t = 1; t < pt.trail.length; t++) {
+          ctx.lineTo(pt.trail[t].x, pt.trail[t].y);
+        }
+        ctx.strokeStyle = `hsla(${pt.hue},${pt.sat}%,${pt.lite}%,${alpha * 0.25})`;
+        ctx.lineWidth = pt.size * 0.4;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+    }
+
+    // ── Composited bloom pass ─────────────────────────────────────────────
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.filter = 'blur(8px)';
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(this.glowCanvas, 0, 0, W, H);
+    ctx.filter = 'none';
+    ctx.restore();
+
+    // ── Bass impact rings ─────────────────────────────────────────────────
+    if (this.bassEnergy > 0.6) {
+      const ringCount = Math.floor(this.bassEnergy * 3);
+      for (let r = 0; r < ringCount; r++) {
+        const radius = (1 - (r / ringCount)) * this.bassEnergy * 150;
+        const alpha = (1 - r / ringCount) * 0.15;
+        ctx.beginPath();
+        ctx.arc(W/2, H/2, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `hsla(${p.baseHue},100%,60%,${alpha})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+  },
+
+  drawWaveform() {
+    const waveCanvas = this.waveCanvas;
+    const waveCtx = this.waveCtx;
+    const W = waveCanvas.width;
+    const H = waveCanvas.height;
+    const p = this.presets[this.preset];
+    const data = this.waveData;
+    if (!data) return;
+
+    waveCtx.clearRect(0, 0, W, H);
+    const sliceW = W / data.length;
+
+    // Draw waveform as filled ribbon
+    waveCtx.beginPath();
+    waveCtx.moveTo(0, H / 2);
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] / 128.0;
+      const y = (v * H / 2);
+      waveCtx.lineTo(i * sliceW, y);
+    }
+    waveCtx.lineTo(W, H / 2);
+    waveCtx.lineTo(0, H / 2);
+    waveCtx.closePath();
+
+    const grad = waveCtx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `hsla(${p.baseHue},100%,70%,0.8)`);
+    grad.addColorStop(0.5, `hsla(${p.baseHue},100%,50%,0.5)`);
+    grad.addColorStop(1, `hsla(${p.baseHue},100%,70%,0.8)`);
+    waveCtx.fillStyle = grad;
+    waveCtx.fill();
+
+    // Line on top
+    waveCtx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] / 128.0;
+      const y = (v * H / 2);
+      if (i === 0) waveCtx.moveTo(i * sliceW, y);
+      else waveCtx.lineTo(i * sliceW, y);
+    }
+    waveCtx.strokeStyle = `hsla(${p.baseHue},100%,90%,0.9)`;
+    waveCtx.lineWidth = 1;
+    waveCtx.stroke();
+  },
+};
+
+// Auto-init on load if already "started" somehow (page refresh)
+window.addEventListener('load', () => {
+  // Don't auto-start — require button click
+});
+</script>
+</body>
+</html>

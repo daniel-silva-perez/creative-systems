@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Abyssal Garden</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #020510;
+      font-family: 'Courier New', monospace;
+    }
+    canvas { display: block; }
+    #info {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(0, 255, 204, 0.4);
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      pointer-events: none;
+      text-align: center;
+    }
+    #species-label {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      color: rgba(136, 85, 255, 0.5);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.8s ease;
+    }
+    #depth-indicator {
+      position: fixed;
+      left: 20px;
+      bottom: 20px;
+      color: rgba(0, 255, 204, 0.35);
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">click to attract — hover to illuminate — drift forever</div>
+  <div id="species-label"></div>
+  <div id="depth-indicator"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    // ─── CONFIG ────────────────────────────────────────────────────────────────
+    const CONFIG = {
+      colors: {
+        void: 0x020510,
+        cyan: new THREE.Color(0x00ffcc),
+        violet: new THREE.Color(0x8855ff),
+        gold: new THREE.Color(0xffcc44),
+        deepBlue: new THREE.Color(0x001a33),
+      },
+      fishCount: [60, 80, 50],
+      jellyfishCount: 5,
+      fireflyCount: 800,
+      coralClusterCount: 7,
+      cameraOrbitSpeed: 0.015,
+      fishAttractionDuration: 5000,
+      fishAttractionRadius: 22,
+    };
+
+    // ─── RENDERER + SCENE ──────────────────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(CONFIG.colors.void);
+    scene.fog = new THREE.FogExp2(CONFIG.colors.void, 0.012);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(0, 8, 25);
+    camera.lookAt(0, 2, 0);
+
+    const clock = new THREE.Clock();
+
+    // ─── POST-PROCESSING ───────────────────────────────────────────────────────
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      1.4, 0.5, 0.75
+    );
+    composer.addPass(bloomPass);
+
+    // ─── LIGHTING ─────────────────────────────────────────────────────────────
+    const ambientLight = new THREE.AmbientLight(0x001122, 0.6);
+    scene.add(ambientLight);
+
+    const moonLight = new THREE.DirectionalLight(0x4466aa, 0.3);
+    moonLight.position.set(10, 40, 10);
+    scene.add(moonLight);
+
+    const biolumLight = new THREE.PointLight(0x00ffcc, 0.8, 50);
+    biolumLight.position.set(0, 5, 0);
+    scene.add(biolumLight);
+
+    // ─── SHADERS ───────────────────────────────────────────────────────────────
+
+    const causticVert = `
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      void main() {
+        vUv = uv;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPos;
+      }
+    `;
+
+    const causticFrag = `
+      uniform float uTime;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash(i), hash(i + vec2(1,0)), f.x),
+          mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x),
+          f.y
+        );
+      }
+      float fbm(vec2 p) {
+        float v = 0.0;
+        v += 0.5 * noise(p); p *= 2.1;
+        v += 0.25 * noise(p); p *= 2.1;
+        v += 0.125 * noise(p);
+        return v;
+      }
+
+      void main() {
+        vec2 uv = vWorldPos.xz * 0.15;
+        float t = uTime * 0.4;
+        float n1 = fbm(uv + vec2(t * 0.7, t * 0.5));
+        float n2 = fbm(uv * 1.7 - vec2(t * 0.3, t * 0.8));
+        float caustic = pow(abs(sin(n1 * 6.28 + n2 * 3.14)), 4.0);
+        vec3 col = mix(uColorA, uColorB, n2);
+        gl_FragColor = vec4(col * caustic * 0.5, 1.0);
+      }
+    `;
+
+    const swayVert = `
+      uniform float uTime;
+      uniform float uSwaySpeed;
+      uniform float uSwayAmount;
+      varying vec3 vNormal;
+      void main() {
+        vec3 pos = position;
+        float wave = sin(uTime * uSwaySpeed + position.y * 1.5 + position.x * 0.5);
+        pos.x += wave * uSwayAmount * (pos.y / 5.0);
+        pos.z += wave * uSwayAmount * 0.6 * (pos.y / 5.0);
+        vNormal = normalMatrix * normal;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+      }
+    `;
+
+    const swayFrag = `
+      uniform vec3 uColor;
+      uniform float uGlow;
+      varying vec3 vNormal;
+      void main() {
+        float rim = 1.0 - max(0.0, dot(vNormal, vec3(0.0, 0.0, 1.0)));
+        vec3 col = uColor + vec3(rim * uGlow);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `;
+
+    // ─── SEAFLOOR ──────────────────────────────────────────────────────────────
+    function createSeafloor() {
+      const geometry = new THREE.PlaneGeometry(200, 200, 120, 120);
+      const posAttr = geometry.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        const x = posAttr.getX(i);
+        const y = posAttr.getY(i);
+        const h =
+          Math.sin(x * 0.3) * Math.cos(y * 0.25) * 2.5 +
+          Math.sin(x * 0.7 + 1.3) * Math.sin(y * 0.6) * 1.2 +
+          Math.sin(x * 1.1 + y * 0.8) * 0.6;
+        posAttr.setZ(i, h);
+      }
+      geometry.computeVertexNormals();
+
+      const causticMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uColorA: { value: new THREE.Color(0x002244) },
+          uColorB: { value: new THREE.Color(0x003355) },
+        },
+        vertexShader: causticVert,
+        fragmentShader: causticFrag,
+      });
+
+      const floor = new THREE.Mesh(geometry, causticMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -4;
+      scene.add(floor);
+      return floor;
+    }
+
+    const seafloor = createSeafloor();
+
+    // ─── L-SYSTEM CORAL ────────────────────────────────────────────────────────
+    const CORAL_TYPES = [
+      { name: 'Fan Coral', axiom: 'F', rules: { F: 'F[+F]F[-F]F' }, angle: 25, len: 0.4, color: new THREE.Color(0x00ffcc), glow: 0.6 },
+      { name: 'Tube Coral', axiom: 'F', rules: { F: 'F[+F][-F]F' }, angle: 20, len: 0.35, color: new THREE.Color(0x8855ff), glow: 0.8 },
+      { name: 'Branch Coral', axiom: 'F', rules: { F: 'FF-[-F+F+F]+[+F-F-F]' }, angle: 22, len: 0.25, color: new THREE.Color(0xffcc44), glow: 0.5 },
+      { name: 'Seaweed', axiom: 'X', rules: { X: 'F[+X][-X]FX', F: 'FF' }, angle: 28, len: 0.3, color: new THREE.Color(0x00ffaa), glow: 0.7 },
+      { name: 'Brain Coral', axiom: 'F', rules: { F: 'F+F-F-F+F' }, angle: 90, len: 0.2, color: new THREE.Color(0xff44aa), glow: 0.4 },
+    ];
+
+    function lsystem(axiom, rules, iterations) {
+      let result = axiom;
+      for (let i = 0; i < iterations; i++) {
+        let next = '';
+        for (const ch of result) {
+          next += rules[ch] || ch;
+        }
+        result = next;
+        if (result.length > 40000) break;
+      }
+      return result;
+    }
+
+    function buildCoralMesh(type, pos, scale = 1, depth = 4) {
+      const str = lsystem(type.axiom, type.rules, depth);
+      const group = new THREE.Group();
+      const positions = [];
+      const colors = [];
+
+      let x = 0, y = 0, z = 0;
+      let angle = -90 * (Math.PI / 180);
+      const stack = [];
+
+      const mat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uSwaySpeed: { value: 0.8 + Math.random() * 0.5 },
+          uSwayAmount: { value: 0.08 + Math.random() * 0.06 },
+          uColor: { value: type.color.clone() },
+          uGlow: { value: type.glow },
+        },
+        vertexShader: swayVert,
+        fragmentShader: swayFrag,
+        side: THREE.DoubleSide,
+      });
+
+      const cylinderGeom = new THREE.CylinderGeometry(0.025, 0.04, type.len, 4);
+
+      for (const ch of str) {
+        switch (ch) {
+          case 'F':
+            const nx = x + Math.cos(angle) * type.len;
+            const ny = y + Math.sin(angle) * type.len;
+            const mesh = new THREE.Mesh(cylinderGeom, mat.clone());
+            mesh.position.set(
+              x + (nx - x) * 0.5,
+              y + (ny - y) * 0.5,
+              z
+            );
+            mesh.rotation.z = angle + Math.PI / 2;
+            mesh.scale.set(scale, scale, scale);
+            group.add(mesh);
+
+            const c = type.color.clone();
+            positions.push(x, y, z, nx, ny, nz = z);
+            colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
+            x = nx; y = ny;
+            break;
+          case '+':
+            angle += type.angle * (Math.PI / 180);
+            break;
+          case '-':
+            angle -= type.angle * (Math.PI / 180);
+            break;
+          case '[':
+            stack.push({ x, y, z, angle });
+            break;
+          case ']':
+            const s = stack.pop();
+            if (s) { x = s.x; y = s.y; z = s.z; angle = s.angle; }
+            break;
+        }
+      }
+
+      group.position.copy(pos);
+      group.rotation.y = Math.random() * Math.PI * 2;
+
+      const mergedGeom = new THREE.BufferGeometry();
+      const allPositions = [];
+      group.children.forEach(m => {
+        const geom = m.geometry.clone();
+        m.updateMatrixWorld();
+        geom.applyMatrix4(m.matrixWorld);
+        const pos = geom.attributes.position.array;
+        for (let i = 0; i < pos.length; i++) allPositions.push(pos[i]);
+      });
+
+      const geom = new THREE.BufferGeometry();
+      const pArr = new Float32Array(allPositions.length / 3 * 3);
+      for (let i = 0; i < allPositions.length / 3; i++) {
+        pArr[i * 3] = allPositions[i * 3];
+        pArr[i * 3 + 1] = allPositions[i * 3 + 1];
+        pArr[i * 3 + 2] = allPositions[i * 3 + 2];
+      }
+      geom.setAttribute('position', new THREE.BufferAttribute(pArr, 3));
+      geom.computeVertexNormals();
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.userData.growthScale = 0;
+      mesh.userData.targetScale = scale;
+      mesh.userData.mat = mat;
+      mesh.userData.typeName = type.name;
+      return mesh;
+    }
+
+    function createCoralCluster(type, center) {
+      const coral = buildCoralMesh(type, center, 1.0, 4);
+      scene.add(coral);
+      corals.push(coral);
+
+      for (let i = 0; i < 4; i++) {
+        const offset = new THREE.Vector3(
+          (Math.random() - 0.5) * 6,
+          0,
+          (Math.random() - 0.5) * 6
+        );
+        const smallCoral = buildCoralMesh(type, center.clone().add(offset), 0.4 + Math.random() * 0.4, 3);
+        scene.add(smallCoral);
+        corals.push(smallCoral);
+      }
+    }
+
+    const corals = [];
+    for (let i = 0; i < CONFIG.coralClusterCount; i++) {
+      const type = CORAL_TYPES[i % CORAL_TYPES.length];
+      const pos = new THREE.Vector3(
+        (Math.random() - 0.5) * 60,
+        -4,
+        (Math.random() - 0.5) * 60
+      );
+      createCoralCluster(type, pos);
+    }
+
+    // ─── JELLYFISH ─────────────────────────────────────────────────────────────
+    class Jellyfish {
+      constructor(pos) {
+        this.pos = pos.clone();
+        this.phase = Math.random() * Math.PI * 2;
+        this.speed = 0.2 + Math.random() * 0.3;
+        this.drift = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.3,
+          0,
+          (Math.random() - 0.5) * 0.3
+        );
+
+        const bellGeom = new THREE.SphereGeometry(0.8, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+        bellGeom.scale(1, 0.7, 1);
+        const bellMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color().lerpColors(CONFIG.colors.cyan, CONFIG.colors.violet, Math.random()),
+          transparent: true,
+          opacity: 0.3,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        this.bell = new THREE.Mesh(bellGeom, bellMat);
+        this.bell.position.copy(this.pos);
+
+        const tentCount = 12;
+        const tentacles = [];
+        for (let i = 0; i < tentCount; i++) {
+          const angle = (i / tentCount) * Math.PI * 2;
+          const tGeom = new THREE.BufferGeometry();
+          const pts = new Float32Array(30);
+          tGeom.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+          const tMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color().lerpColors(CONFIG.colors.cyan, CONFIG.colors.violet, Math.random()),
+            transparent: true,
+            opacity: 0.4,
+          });
+          const tent = new THREE.Line(tGeom, tMat);
+          tent.frustumCulled = false;
+          this.bell.add(tent);
+          tentacles.push({ line: tent, angle });
+        }
+        this.tentacles = tentacles;
+        scene.add(this.bell);
+      }
+
+      update(t, dt) {
+        this.pos.y += Math.sin(t * this.speed + this.phase) * 0.015;
+        this.pos.x += this.drift.x * dt;
+        this.pos.z += this.drift.z * dt;
+
+        const pulse = 0.5 + Math.sin(t * 2.0 + this.phase) * 0.3;
+        this.bell.scale.set(pulse, 0.7 * pulse, pulse);
+        this.bell.position.copy(this.pos);
+
+        this.tentacles.forEach(({ line, angle }) => {
+          const pts = [];
+          for (let j = 0; j < 10; j++) {
+            const frac = j / 9;
+            const wave = Math.sin(t * 1.5 + frac * 4 + this.phase) * frac * 0.8;
+            const bx = Math.cos(angle) * frac * 0.5;
+            const bz = Math.sin(angle) * frac * 0.5;
+            pts.push(bx + wave * Math.sin(angle), -frac * 2.5, bz + wave * Math.cos(angle));
+          }
+          line.geometry.attributes.position.array.set(pts);
+          line.geometry.attributes.position.needsUpdate = true;
+        });
+      }
+    }
+
+    const jellyfish = [];
+    for (let i = 0; i < CONFIG.jellyfishCount; i++) {
+      const pos = new THREE.Vector3(
+        (Math.random() - 0.5) * 40,
+        5 + Math.random() * 8,
+        (Math.random() - 0.5) * 40
+      );
+      jellyfish.push(new Jellyfish(pos));
+    }
+
+    // ─── BOIDS FISH ─────────────────────────────────────────────────────────────
+    class Boid {
+      constructor(center) {
+        this.pos = new THREE.Vector3(
+          center.x + (Math.random() - 0.5) * 20,
+          center.y + (Math.random() - 0.5) * 8,
+          center.z + (Math.random() - 0.5) * 20
+        );
+        this.vel = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.5,
+          (Math.random() - 0.5) * 0.1,
+          (Math.random() - 0.5) * 0.5
+        );
+        this.acc = new THREE.Vector3();
+        this.maxSpeed = 0.15 + Math.random() * 0.1;
+        this.maxForce = 0.03;
+        this.trail = [];
+        this.phase = Math.random() * Math.PI * 2;
+
+        const colors = [CONFIG.colors.cyan, CONFIG.colors.violet, CONFIG.colors.gold];
+        const col = colors[Math.floor(Math.random() * colors.length)];
+
+        const bodyGeom = new THREE.ConeGeometry(0.15, 0.6, 4);
+        bodyGeom.rotateX(Math.PI / 2);
+        const bodyMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85 });
+        this.mesh = new THREE.Mesh(bodyGeom, bodyMat);
+        this.mesh.frustumCulled = false;
+        scene.add(this.mesh);
+
+        const trailGeom = new THREE.BufferGeometry();
+        const trailPts = new Float32Array(8 * 3);
+        trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPts, 3));
+        const trailMat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.2, depthWrite: false });
+        this.trailLine = new THREE.Line(trailGeom, trailMat);
+        this.trailLine.frustumCulled = false;
+        scene.add(this.trailLine);
+      }
+
+      applyForce(f) { this.acc.add(f); }
+
+      steer(target, weight) {
+        const desired = target.clone().sub(this.pos);
+        desired.normalize().multiplyScalar(this.maxSpeed);
+        const steer = desired.sub(this.vel);
+        steer.clampLength(0, this.maxForce);
+        return steer.multiplyScalar(weight);
+      }
+
+      flock(boids, mouseAttract) {
+        const sep = new THREE.Vector3();
+        const ali = new THREE.Vector3();
+        const coh = new THREE.Vector3();
+        let sepCount = 0, aliCount = 0, cohCount = 0;
+
+        for (const other of boids) {
+          if (other === this) continue;
+          const d = this.pos.distanceTo(other.pos);
+          if (d < 3) {
+            const diff = this.pos.clone().sub(other.pos).normalize().divideScalar(Math.max(d, 0.1));
+            sep.add(diff);
+            sepCount++;
+          }
+          if (d < 10) {
+            ali.add(other.vel);
+            aliCount++;
+            coh.add(other.pos);
+            cohCount++;
+          }
+        }
+
+        if (sepCount > 0) { sep.divideScalar(sepCount).normalize().multiplyScalar(this.maxSpeed).sub(this.vel).clampLength(0, this.maxForce); }
+        if (aliCount > 0) { ali.divideScalar(aliCount).normalize().multiplyScalar(this.maxSpeed).sub(this.vel).clampLength(0, this.maxForce); }
+        if (cohCount > 0) { coh.divideScalar(cohCount).sub(this.pos).normalize().multiplyScalar(this.maxSpeed).sub(this.vel).clampLength(0, this.maxForce); }
+
+        this.applyForce(sep.multiplyScalar(1.5));
+        this.applyForce(ali.multiplyScalar(1.0));
+        this.applyForce(coh.multiplyScalar(1.0));
+
+        // Mouse attraction
+        if (mouseAttract) {
+          const md = this.pos.distanceTo(mouseAttract);
+          if (md < CONFIG.fishAttractionRadius && md > 1) {
+            const attract = this.steer(mouseAttract, 2.0);
+            this.applyForce(attract);
+          }
+        }
+
+        // Bounds
+        if (this.pos.x < -40) this.applyForce(new THREE.Vector3(0.05, 0, 0));
+        if (this.pos.x > 40) this.applyForce(new THREE.Vector3(-0.05, 0, 0));
+        if (this.pos.z < -40) this.applyForce(new THREE.Vector3(0, 0, 0.05));
+        if (this.pos.z > 40) this.applyForce(new THREE.Vector3(0, 0, -0.05));
+        if (this.pos.y < -2) this.applyForce(new THREE.Vector3(0, 0.05, 0));
+        if (this.pos.y > 15) this.applyForce(new THREE.Vector3(0, -0.03, 0));
+      }
+
+      update(dt) {
+        this.vel.add(this.acc).clampLength(0, this.maxSpeed);
+        this.pos.add(this.vel.clone().multiplyScalar(dt * 60));
+        this.acc.set(0, 0, 0);
+
+        this.trail.push(this.pos.clone());
+        if (this.trail.length > 8) this.trail.shift();
+
+        this.mesh.position.copy(this.pos);
+        const lookDir = this.vel.clone().normalize();
+        if (lookDir.length() > 0.001) {
+          this.mesh.lookAt(this.pos.clone().add(lookDir));
+        }
+
+        // Glow pulse
+        const pulse = 0.7 + Math.sin(clock.elapsedTime * 2 + this.phase) * 0.3;
+        this.mesh.material.opacity = pulse * 0.85;
+
+        // Trail
+        const pts = [];
+        this.trail.forEach(p => pts.push(p.x, p.y, p.z));
+        while (pts.length < 8 * 3) pts.push(pts[pts.length - 3] || 0, pts[pts.length - 2] || 0, pts[pts.length - 1] || 0);
+        this.trailLine.geometry.attributes.position.array.set(pts);
+        this.trailLine.geometry.attributes.position.needsUpdate = true;
+      }
+    }
+
+    const schools = CONFIG.fishCount.map((count, si) => {
+      const center = new THREE.Vector3(
+        (Math.random() - 0.5) * 30,
+        3 + Math.random() * 6,
+        (Math.random() - 0.5) * 30
+      );
+      const boids = [];
+      for (let i = 0; i < count; i++) boids.push(new Boid(center));
+      return boids;
+    });
+
+    // ─── FIREFLY PARTICLES ──────────────────────────────────────────────────────
+    function createFireflies() {
+      const count = CONFIG.fireflyCount;
+      const positions = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
+      const phases = new Float32Array(count);
+
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 80;
+        positions[i * 3 + 1] = Math.random() * 20 - 2;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 80;
+
+        const c = [CONFIG.colors.cyan, CONFIG.colors.violet, CONFIG.colors.gold][Math.floor(Math.random() * 3)];
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+
+        phases[i] = Math.random() * Math.PI * 2;
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const mat = new THREE.PointsMaterial({
+        size: 0.2,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.7,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        sizeAttenuation: true,
+      });
+
+      const pts = new THREE.Points(geom, mat);
+      scene.add(pts);
+      return { geom, phases, positions };
+    }
+
+    const fireflies = createFireflies();
+
+    // ─── MOUSE ATTRACTION ───────────────────────────────────────────────────────
+    const mouse = new THREE.Vector2();
+    const mouseWorld = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+    const attractPoint = new THREE.Vector3();
+    let mouseAttractTime = 0;
+
+    renderer.domElement.addEventListener('click', (e) => {
+      const nx = (e.clientX / window.innerWidth) * 2 - 1;
+      const ny = -(e.clientY / window.innerHeight) * 2 + 1;
+      mouse.set(nx, ny);
+      raycaster.setFromCamera(mouse, camera);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -3);
+      raycaster.ray.intersectPlane(plane, attractPoint);
+      mouseAttractTime = clock.elapsedTime;
+    });
+
+    // ─── SPECIES LABEL ──────────────────────────────────────────────────────────
+    const speciesLabel = document.getElementById('species-label');
+    const speciesTimers = new Map();
+    const coralSpecies = ['Fan Coral', 'Tube Coral', 'Branch Coral', 'Seaweed', 'Brain Coral'];
+    coralSpecies.forEach(name => speciesTimers.set(name, 0));
+
+    // ─── DEPTH INDICATOR ────────────────────────────────────────────────────────
+    const depthIndicator = document.getElementById('depth-indicator');
+
+    // ─── CORAL GROWTH ───────────────────────────────────────────────────────────
+    function updateCorals(dt) {
+      corals.forEach(coral => {
+        if (coral.userData.growthScale < coral.userData.targetScale) {
+          coral.userData.growthScale += dt * 0.08;
+          coral.userData.growthScale = Math.min(coral.userData.growthScale, coral.userData.targetScale);
+          coral.scale.setScalar(coral.userData.growthScale);
+        }
+        if (coral.userData.mat) {
+          coral.userData.mat.uniforms.uTime.value = clock.elapsedTime;
+        }
+      });
+    }
+
+    // ─── FISH ───────────────────────────────────────────────────────────────────
+    function updateFish(dt) {
+      const attract = (clock.elapsedTime - mouseAttractTime) < (CONFIG.fishAttractionDuration / 1000);
+      const attractTarget = attract ? attractPoint : null;
+
+      schools.forEach((school, si) => {
+        school.forEach(boid => boid.flock(school, attractTarget));
+        school.forEach(boid => boid.update(dt));
+      });
+    }
+
+    // ─── FIREFLIES ─────────────────────────────────────────────────────────────
+    function updateFireflies(dt) {
+      const pos = fireflies.geom.attributes.position.array;
+      const t = clock.elapsedTime;
+
+      for (let i = 0; i < CONFIG.fireflyCount; i++) {
+        const phase = fireflies.phases[i];
+        pos[i * 3] += Math.sin(t * 0.5 + phase) * 0.005;
+        pos[i * 3 + 1] += Math.sin(t * 0.7 + phase * 1.3) * 0.008;
+        pos[i * 3 + 2] += Math.cos(t * 0.4 + phase * 0.8) * 0.005;
+
+        if (pos[i * 3 + 1] > 20) pos[i * 3 + 1] = -2;
+        if (pos[i * 3] > 50) pos[i * 3] = -50;
+        if (pos[i * 3] < -50) pos[i * 3] = 50;
+        if (pos[i * 3 + 2] > 50) pos[i * 3 + 2] = -50;
+        if (pos[i * 3 + 2] < -50) pos[i * 3 + 2] = 50;
+      }
+
+      fireflies.geom.attributes.position.needsUpdate = true;
+    }
+
+    // ─── ORBIT CAMERA ───────────────────────────────────────────────────────────
+    const orbitAngle = { value: 0 };
+
+    // ─── RESIZE ────────────────────────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─── ANIMATION LOOP ─────────────────────────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const t = clock.elapsedTime;
+
+      // Caustic shader
+      seafloor.material.uniforms.uTime.value = t;
+
+      // Camera orbit
+      orbitAngle.value += CONFIG.cameraOrbitSpeed * dt;
+      camera.position.x = Math.sin(orbitAngle.value) * 28;
+      camera.position.z = Math.cos(orbitAngle.value) * 28;
+      camera.position.y = 8 + Math.sin(t * 0.15) * 3;
+      camera.lookAt(0, 3, 0);
+
+      // Biolum light pulse
+      biolumLight.intensity = 0.5 + Math.sin(t * 1.2) * 0.3;
+
+      updateCorals(dt);
+      updateFish(dt);
+      updateFireflies(dt);
+
+      // Jellyfish
+      jellyfish.forEach(jf => jf.update(t, dt));
+
+      // Depth indicator
+      depthIndicator.textContent = `depth ${camera.position.y.toFixed(1)}m`;
+
+      // Auto-show species label periodically
+      if (Math.floor(t) % 12 === 0 && Math.floor(t) !== coralSpecies._lastShown) {
+        const name = coralSpecies[Math.floor(t / 12) % coralSpecies.length];
+        speciesLabel.textContent = name;
+        speciesLabel.style.opacity = '1';
+        setTimeout(() => { speciesLabel.style.opacity = '0'; }, 2500);
+        coralSpecies._lastShown = Math.floor(t);
+      }
+
+      composer.render();
+    }
+
+    animate();
+  </script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Creative Systems — Daniel Silva Perez</title>
+    <meta
+      name="description"
+      content="A curated monorepo of browser-native creative systems: simulations, shader labs, audio-reactive worlds, realtime experiments, and playable prototypes."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">DANIEL SILVA PEREZ — CREATIVE SYSTEMS</p>
+        <h1>Browser-native experiments in simulation, sound, motion, and generative worlds.</h1>
+        <p class="role-line">Creative developer building WebGL, audio-reactive, realtime, and game-like systems for the browser.</p>
+        <p class="lede">
+          A curated monorepo of interactive prototypes, visual studies, and playable experiments. It exists to make the work easier to browse, easier to compare, and stronger as a single portfolio line.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#catalog">Browse experiments</a>
+          <a class="button" href="https://github.com/daniel-silva-perez">GitHub Profile</a>
+          <a class="button" href="./README.md">Repo guide</a>
+        </div>
+      </section>
+
+      <section class="meta-strip">
+        <div>
+          <span class="meta-label">Focus</span>
+          <strong>Creative coding with recruiter-legible packaging</strong>
+        </div>
+        <div>
+          <span class="meta-label">Mediums</span>
+          <strong>WebGL · Canvas · Audio · Games · Realtime</strong>
+        </div>
+        <div>
+          <span class="meta-label">Collection</span>
+          <strong>10 experiments, one curated catalog</strong>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <p class="kicker">FEATURED</p>
+          <h2>Start with the experiments that best show range: shader tooling, spatial audio, and emergent simulation.</h2>
+        </div>
+        <div id="featured" class="featured-grid"></div>
+      </section>
+
+      <section id="catalog">
+        <div class="section-head">
+          <p class="kicker">CATALOG</p>
+          <h2>Live demos, source links, and project notes for the rest of the collection.</h2>
+        </div>
+        <div id="grid" class="grid"></div>
+      </section>
+    </main>
+
+    <script>
+      const runtimeTone = {
+        static: 'Live demo',
+        node: 'Run locally',
+        bun: 'Run locally',
+        vite: 'Run locally'
+      };
+
+      const featuredSet = new Set(['morphix', 'echo-chamber', 'neon-flock']);
+
+      function renderCard(app, index, featured = false) {
+        const isStatic = app.runtime === 'static';
+        const primaryHref = isStatic ? `./${app.entry}` : app.source;
+        const primaryLabel = isStatic ? 'Live demo' : 'Standalone repo';
+        const secondaryHref = app.source;
+        const secondaryLabel = 'Original repo';
+        return `
+          <article class="card ${featured ? 'card-featured' : ''} card-${(index % 5) + 1}">
+            <div class="card-top">
+              <span class="pill">${app.category}</span>
+              <span class="runtime">${app.runtime}</span>
+            </div>
+            <h3>${app.title}</h3>
+            <p>${app.tagline}</p>
+            <div class="card-actions">
+              <a href="${primaryHref}">${primaryLabel}</a>
+              <a href="${secondaryHref}">${secondaryLabel}</a>
+            </div>
+            <code>${runtimeTone[app.runtime] || app.runtime} · ${app.slug}</code>
+          </article>
+        `;
+      }
+
+      fetch('./manifest.json')
+        .then((r) => r.json())
+        .then((apps) => {
+          const featured = apps.filter((app) => featuredSet.has(app.slug));
+          const rest = apps.filter((app) => !featuredSet.has(app.slug));
+          document.getElementById('featured').innerHTML = featured.map((app, i) => renderCard(app, i, true)).join('');
+          document.getElementById('grid').innerHTML = rest.map((app, i) => renderCard(app, i, false)).join('');
+        })
+        .catch((err) => {
+          document.getElementById('grid').innerHTML = `<p class="error">Failed to load manifest: ${err}</p>`;
+        });
+    </script>
+  </body>
+</html>

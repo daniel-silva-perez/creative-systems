@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEON FLOCK — Murmuration Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #050510; }
+    canvas { display: block; position: fixed; top: 0; left: 0; }
+
+    #hud {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      font-family: 'Orbitron', monospace;
+      color: rgba(0, 229, 255, 0.85);
+      font-size: 11px;
+      line-height: 1.8;
+      pointer-events: none;
+      text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+      z-index: 10;
+    }
+    #hud .title {
+      font-size: 16px;
+      font-weight: 900;
+      letter-spacing: 3px;
+      color: #00e5ff;
+      text-shadow: 0 0 20px rgba(0, 229, 255, 0.8), 0 0 40px rgba(0, 229, 255, 0.3);
+      margin-bottom: 8px;
+    }
+    #hud .stat { opacity: 0.7; }
+    #hud .stat span { color: #ff00aa; opacity: 1; }
+    #hud .hint {
+      margin-top: 12px;
+      font-size: 9px;
+      opacity: 0.4;
+      letter-spacing: 1px;
+    }
+
+    #cursor-ring {
+      position: fixed;
+      pointer-events: none;
+      border-radius: 50%;
+      border: 1.5px solid rgba(255, 51, 102, 0.6);
+      box-shadow: 0 0 12px rgba(255, 51, 102, 0.3), inset 0 0 8px rgba(255, 51, 102, 0.1);
+      transform: translate(-50%, -50%);
+      z-index: 5;
+      transition: width 0.1s ease, height 0.1s ease;
+    }
+  </style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="title">NEON FLOCK</div>
+  <div class="stat">BIRDS <span id="bird-count">0</span></div>
+  <div class="stat">FPS <span id="fps">0</span></div>
+  <div class="stat">AVG SPEED <span id="avg-speed">0.00</span></div>
+  <div class="hint">MOVE TO SCATTER &bull; CLICK TO FEED &bull; ESC TO LOCK</div>
+</div>
+
+<div id="cursor-ring"></div>
+<canvas id="canvas"></canvas>
+
+<script>
+'use strict';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const NUM_BOIDS       = 2000;
+const MAX_SPEED       = 4.2;
+const MAX_FORCE       = 0.18;
+const SEP_WEIGHT      = 1.8;
+const ALI_WEIGHT      = 1.0;
+const COH_WEIGHT      = 1.0;
+const PRED_RADIUS     = 180;
+const PRED_STRENGTH   = 12;
+const FOOD_RADIUS     = 130;
+const FOOD_STRENGTH   = 6;
+const FOOD_DECAY_MS   = 30_000;
+const TRAIL_LEN       = 8;
+const GRID_CELL       = 50;
+const CURSOR_SIZE     = 360; // px diameter for cursor ring display
+
+// ─── Canvas Setup ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const cursorRing = document.getElementById('cursor-ring');
+
+let W = 0, H = 0;
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Mouse / Predator ─────────────────────────────────────────────────────────
+let mouseX = W / 2, mouseY = H / 2;
+let isLocked = false;
+
+window.addEventListener('mousemove', e => {
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  cursorRing.style.left = mouseX + 'px';
+  cursorRing.style.top  = mouseY + 'px';
+  cursorRing.style.width  = CURSOR_SIZE + 'px';
+  cursorRing.style.height = CURSOR_SIZE + 'px';
+});
+
+window.addEventListener('click', e => {
+  foodSources.push({
+    x: e.clientX,
+    y: e.clientY,
+    born: performance.now(),
+    strength: FOOD_STRENGTH,
+    pulse: 0,
+  });
+});
+
+// Pointer lock for predator mode
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (isLocked) {
+      document.exitPointerLock();
+      isLocked = false;
+      cursorRing.style.opacity = '1';
+    }
+  }
+});
+
+document.addEventListener('pointerlockchange', () => {
+  isLocked = document.pointerLockElement === document.body;
+  cursorRing.style.opacity = isLocked ? '0' : '1';
+});
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
+const rand  = (lo, hi) => lo + Math.random() * (hi - lo);
+
+// Speed → color: slow=cyan (#00e5ff), fast=magenta (#ff00aa)
+function speedColor(speed) {
+  const t = clamp(speed / MAX_SPEED, 0, 1);
+  // Lerp R, G, B separately
+  const r = Math.round(lerp(0,   255, t));
+  const g = Math.round(lerp(229,   0, t));
+  const b = Math.round(lerp(255, 170, t));
+  return `rgb(${r},${g},${b})`;
+}
+
+// ─── Spatial Grid ─────────────────────────────────────────────────────────────
+class Grid {
+  constructor(cellSize) {
+    this.cs   = cellSize;
+    this.data = new Map();
+  }
+
+  _key(x, y) {
+    return ((Math.floor(x / this.cs) & 0xFFFF) << 16) | (Math.floor(y / this.cs) & 0xFFFF);
+  }
+
+  clear() { this.data.clear(); }
+
+  insert(bird) {
+    const k = this._key(bird.x, bird.y);
+    if (!this.data.has(k)) this.data.set(k, []);
+    this.data.get(k).push(bird);
+  }
+
+  query(x, y, radius) {
+    const res = [];
+    const cellR = Math.ceil(radius / this.cs);
+    const cx = Math.floor(x / this.cs);
+    const cy = Math.floor(y / this.cs);
+    const r2 = radius * radius;
+
+    for (let dx = -cellR; dx <= cellR; dx++) {
+      for (let dy = -cellR; dy <= cellR; dy++) {
+        const k = (((cx + dx) & 0xFFFF) << 16) | ((cy + dy) & 0xFFFF);
+        const cell = this.data.get(k);
+        if (!cell) continue;
+        for (const b of cell) {
+          if (dist2(x, y, b.x, b.y) <= r2) res.push(b);
+        }
+      }
+    }
+    return res;
+  }
+}
+
+// ─── Food Sources ─────────────────────────────────────────────────────────────
+const foodSources = [];
+
+// ─── Boid ────────────────────────────────────────────────────────────────────
+class Boid {
+  constructor() {
+    this.x  = rand(0, W);
+    this.y  = rand(0, H);
+    this.vx = rand(-1, 1);
+    this.vy = rand(-1, 1);
+    // Trail: circular buffer of {x,y} pairs
+    this.trail = Array.from({ length: TRAIL_LEN }, () => ({ x: this.x, y: this.y }));
+    this.trailIdx = 0;
+    this.speed = 0;
+  }
+
+  update(neighbors) {
+    let ax = 0, ay = 0;
+
+    let sepX = 0, sepY = 0, sepN = 0;
+    let aliX = 0, aliY = 0, aliN = 0;
+    let cohX = 0, cohY = 0, cohN = 0;
+
+    for (const other of neighbors) {
+      if (other === this) continue;
+      const dx = this.x - other.x;
+      const dy = this.y - other.y;
+      const d2 = dx * dx + dy * dy;
+      const d  = Math.sqrt(d2) || 0.0001;
+
+      // Separation (only within 40px)
+      if (d < 40) {
+        sepX += dx / d;
+        sepY += dy / d;
+        sepN++;
+      }
+
+      // Alignment
+      aliX += other.vx;
+      aliY += other.vy;
+      aliN++;
+
+      // Cohesion
+      cohX += other.x;
+      cohY += other.y;
+      cohN++;
+    }
+
+    if (sepN > 0) {
+      sepX /= sepN; sepY /= sepN;
+      const mag = Math.sqrt(sepX * sepX + sepY * sepY) || 0.0001;
+      sepX = (sepX / mag) * MAX_SPEED - this.vx;
+      sepY = (sepY / mag) * MAX_SPEED - this.vy;
+      const fmag = Math.sqrt(sepX * sepX + sepY * sepY);
+      if (fmag > MAX_FORCE) { sepX = (sepX / fmag) * MAX_FORCE; sepY = (sepY / fmag) * MAX_FORCE; }
+      ax += sepX * SEP_WEIGHT;
+      ay += sepY * SEP_WEIGHT;
+    }
+
+    if (aliN > 0) {
+      aliX /= aliN; aliY /= aliN;
+      const mag = Math.sqrt(aliX * aliX + aliY * aliY) || 0.0001;
+      aliX = (aliX / mag) * MAX_SPEED - this.vx;
+      aliY = (aliY / mag) * MAX_SPEED - this.vy;
+      const fmag = Math.sqrt(aliX * aliX + aliY * aliY);
+      if (fmag > MAX_FORCE) { aliX = (aliX / fmag) * MAX_FORCE; aliY = (aliY / fmag) * MAX_FORCE; }
+      ax += aliX * ALI_WEIGHT;
+      ay += aliY * ALI_WEIGHT;
+    }
+
+    if (cohN > 0) {
+      cohX /= cohN; cohY /= cohN;
+      cohX -= this.x; cohY -= this.y;
+      const mag = Math.sqrt(cohX * cohX + cohY * cohY) || 0.0001;
+      cohX = (cohX / mag) * MAX_SPEED - this.vx;
+      cohY = (cohY / mag) * MAX_SPEED - this.vy;
+      const fmag = Math.sqrt(cohX * cohX + cohY * cohY);
+      if (fmag > MAX_FORCE) { cohX = (cohX / fmag) * MAX_FORCE; cohY = (cohY / fmag) * MAX_FORCE; }
+      ax += cohX * COH_WEIGHT;
+      ay += cohY * COH_WEIGHT;
+    }
+
+    // Predator repulsion
+    const pdx = this.x - mouseX;
+    const pdy = this.y - mouseY;
+    const pd2 = pdx * pdx + pdy * pdy;
+    if (pd2 < PRED_RADIUS * PRED_RADIUS) {
+      const pd = Math.sqrt(pd2) || 0.0001;
+      const str = (1 - pd / PRED_RADIUS) * PRED_STRENGTH;
+      ax += (pdx / pd) * str;
+      ay += (pdy / pd) * str;
+    }
+
+    // Food attraction
+    for (const food of foodSources) {
+      const age = performance.now() - food.born;
+      if (age > FOOD_DECAY_MS) continue;
+      const fdx = food.x - this.x;
+      const fdy = food.y - this.y;
+      const fd2 = fdx * fdx + fdy * fdy;
+      if (fd2 < FOOD_RADIUS * FOOD_RADIUS) {
+        const fd = Math.sqrt(fd2) || 0.0001;
+        const str = (1 - fd / FOOD_RADIUS) * food.strength * (1 - age / FOOD_DECAY_MS);
+        ax += (fdx / fd) * str;
+        ay += (fdy / fd) * str;
+      }
+    }
+
+    // Separation from all birds (global, lighter)
+    // NOTE: we already do local separation via neighbors; skip double-count
+
+    this.vx += ax;
+    this.vy += ay;
+
+    // Clamp speed
+    const spd = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (spd > MAX_SPEED) {
+      this.vx = (this.vx / spd) * MAX_SPEED;
+      this.vy = (this.vy / spd) * MAX_SPEED;
+    }
+    this.speed = spd;
+
+    this.x += this.vx;
+    this.y += this.vy;
+
+    // Wrap edges
+    if (this.x < -20) this.x = W + 20;
+    else if (this.x > W + 20) this.x = -20;
+    if (this.y < -20) this.y = H + 20;
+    else if (this.y > H + 20) this.y = -20;
+
+    // Trail update
+    this.trail[this.trailIdx] = { x: this.x, y: this.y };
+    this.trailIdx = (this.trailIdx + 1) % TRAIL_LEN;
+  }
+
+  drawTrail(ctx) {
+    // Draw trail as connected line segments with fading alpha
+    const color = speedColor(this.speed);
+    ctx.beginPath();
+    // Reconstruct trail in order from oldest to newest
+    const oldest = (this.trailIdx + 1) % TRAIL_LEN;
+    ctx.moveTo(this.trail[oldest].x, this.trail[oldest].y);
+    for (let i = 1; i < TRAIL_LEN; i++) {
+      const idx = (oldest + i) % TRAIL_LEN;
+      ctx.lineTo(this.trail[idx].x, this.trail[idx].y);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 0.8;
+    ctx.globalAlpha = 0.25;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  drawHead(ctx) {
+    const color = speedColor(this.speed);
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+}
+
+// ─── State ───────────────────────────────────────────────────────────────────
+const grid    = new Grid(GRID_CELL);
+const boids   = Array.from({ length: NUM_BOIDS }, () => new Boid());
+
+// Pre-fill grid on init
+function rebuildGrid() {
+  grid.clear();
+  for (const b of boids) grid.insert(b);
+}
+
+// ─── Stats ───────────────────────────────────────────────────────────────────
+let lastTime = performance.now();
+let fps = 0, avgSpeed = 0;
+let frameCount = 0, fpsAccum = 0;
+
+const elBirdCount = document.getElementById('bird-count');
+const elFps       = document.getElementById('fps');
+const elAvgSpeed  = document.getElementById('avg-speed');
+
+// ─── Draw food pulses ─────────────────────────────────────────────────────────
+function drawFood(now) {
+  for (let i = foodSources.length - 1; i >= 0; i--) {
+    const f = foodSources[i];
+    const age = now - f.born;
+    if (age > FOOD_DECAY_MS) { foodSources.splice(i, 1); continue; }
+
+    const life   = 1 - age / FOOD_DECAY_MS;
+    const pulse  = (Math.sin(age * 0.004) * 0.5 + 0.5);
+    const radius = FOOD_RADIUS * (0.6 + pulse * 0.4 * life);
+
+    // Outer ring
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(57, 255, 20, ${life * 0.4})`;
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+
+    // Inner glow
+    const grd = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, radius * 0.5);
+    grd.addColorStop(0, `rgba(57, 255, 20, ${life * 0.25})`);
+    grd.addColorStop(1, 'rgba(57, 255, 20, 0)');
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, radius * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle = grd;
+    ctx.fill();
+  }
+}
+
+// ─── Main Loop ────────────────────────────────────────────────────────────────
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 16.67, 3); // normalized to ~60fps cap
+  lastTime = now;
+
+  // Clear with slight fade for motion blur effect
+  ctx.fillStyle = 'rgba(5, 5, 16, 0.35)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Rebuild spatial grid
+  grid.clear();
+  for (const b of boids) grid.insert(b);
+
+  // Update boids with neighbor queries
+  let totalSpeed = 0;
+  for (const b of boids) {
+    const neighbors = grid.query(b.x, b.y, 50);
+    b.update(neighbors);
+    totalSpeed += b.speed;
+  }
+  avgSpeed = totalSpeed / boids.length;
+
+  // Draw food
+  drawFood(now);
+
+  // Draw boid trails then heads
+  for (const b of boids) b.drawTrail(ctx);
+  for (const b of boids) b.drawHead(ctx);
+
+  // Stats
+  frameCount++;
+  fpsAccum += now - lastTime; // this is dt-based; use actual elapsed
+  fps = Math.round(frameCount / ((now - (performance.now() - fpsAccum)) / 1000) || 60);
+
+  elBirdCount.textContent = boids.length;
+  elFps.textContent       = Math.round(fps);
+  elAvgSpeed.textContent  = avgSpeed.toFixed(2);
+
+  requestAnimationFrame(loop);
+}
+
+// Simple FPS tracking
+let _lastFrameTime = performance.now();
+frameCount = 0;
+fpsAccum = 0;
+
+const _loop = (now) => {
+  const elapsed = now - _lastFrameTime;
+  _lastFrameTime = now;
+
+  // Clear with slight fade for motion blur
+  ctx.fillStyle = 'rgba(5, 5, 16, 0.4)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Rebuild grid
+  grid.clear();
+  for (const b of boids) grid.insert(b);
+
+  // Update all boids
+  let totalSpeed = 0;
+  for (const b of boids) {
+    const neighbors = grid.query(b.x, b.y, 50);
+    b.update(neighbors);
+    totalSpeed += b.speed;
+  }
+  avgSpeed = totalSpeed / boids.length;
+
+  // Food pulses
+  drawFood(now);
+
+  // Trails then heads
+  for (const b of boids) b.drawTrail(ctx);
+  for (const b of boids) b.drawHead(ctx);
+
+  // FPS
+  frameCount++;
+  fpsAccum += elapsed;
+  if (fpsAccum >= 1000) {
+    fps = Math.round(frameCount * 1000 / fpsAccum);
+    elFps.textContent = fps;
+    elAvgSpeed.textContent = avgSpeed.toFixed(2);
+    frameCount = 0;
+    fpsAccum = 0;
+  }
+
+  elBirdCount.textContent = boids.length;
+
+  requestAnimationFrame(_loop);
+};
+
+rebuildGrid();
+requestAnimationFrame(_loop);
+</script>
+</body>
+</html>

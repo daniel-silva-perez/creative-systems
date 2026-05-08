@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flow State</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: 'Syne', sans-serif;
+    color: #fff;
+  }
+
+  canvas { position: fixed; inset: 0; }
+
+  #ui {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    padding: 24px 32px 32px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    pointer-events: none;
+    background: linear-gradient(transparent, rgba(0,0,0,0.45));
+  }
+
+  #mode-label {
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    opacity: 0.5;
+  }
+
+  #title {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  #hint {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    opacity: 0.35;
+    text-align: right;
+  }
+
+  #mode-btn {
+    position: fixed;
+    top: 24px; right: 28px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.7);
+    font-family: 'Syne', sans-serif;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 10px 20px;
+    border-radius: 24px;
+    cursor: pointer;
+    pointer-events: all;
+    transition: all 0.3s ease;
+  }
+  #mode-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+  #bpm-control {
+    position: fixed;
+    top: 24px; left: 28px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    pointer-events: all;
+  }
+  #bpm-label {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    opacity: 0.5;
+  }
+  #bpm-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100px; height: 2px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
+    outline: none;
+  }
+  #bpm-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+  }
+  #bpm-value {
+    font-size: 13px;
+    font-weight: 700;
+    min-width: 36px;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<button id="mode-btn">Ambient</button>
+
+<div id="bpm-control">
+  <span id="bpm-label">BPM</span>
+  <input type="range" id="bpm-slider" min="60" max="180" value="85">
+  <span id="bpm-value">85</span>
+</div>
+
+<div id="ui">
+  <div>
+    <div id="mode-label">ambient flow</div>
+    <div id="title">Flow State</div>
+  </div>
+  <div id="hint">Click to begin</div>
+</div>
+
+<script>
+'use strict';
+
+// ─── CONFIG ────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const canvas = $('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── STATE ─────────────────────────────────────────────────────────────
+let mode = 'ambient'; // 'ambient' | 'rhythmic'
+let started = false;
+let bpm = 85;
+let beatPhase = 0;
+let time = 0;
+let lastTs = null;
+
+// ─── AUDIO ─────────────────────────────────────────────────────────────
+let actx, masterGain, lfoGain, delayNode, feedbackGain;
+
+function initAudio() {
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = actx.createGain();
+  masterGain.gain.value = 0.28;
+  masterGain.connect(actx.destination);
+
+  // delay / reverb
+  delayNode = actx.createDelay(2.5);
+  delayNode.delayTime.value = 0.65;
+  feedbackGain = actx.createGain();
+  feedbackGain.gain.value = 0.38;
+  const lpFilter = actx.createBiquadFilter();
+  lpFilter.type = 'lowpass';
+  lpFilter.frequency.value = 1400;
+
+  delayNode.connect(lpFilter);
+  lpFilter.connect(feedbackGain);
+  feedbackGain.connect(delayNode);
+  delayNode.connect(masterGain);
+
+  // LFO
+  lfoGain = actx.createGain();
+  lfoGain.gain.value = 0;
+  lfoGain.connect(masterGain);
+}
+
+// ─── HELPERS ───────────────────────────────────────────────────────────
+function now() { return actx ? actx.currentTime : 0; }
+
+function freq(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+// Simple envelope
+function ramp(param, from, to, dur, t = now()) {
+  param.setValueAtTime(from, t);
+  param.exponentialRampToValueAtTime(Math.max(to, 0.0001), t + dur);
+}
+
+// ─── PAD ENGINE (ambient) ───────────────────────────────────────────────
+const padVoices = [];
+const PAD_FREQS = [0, 3, 7, 10, 12, 14, 17, 19];
+
+function playPad(note, dur = 9) {
+  if (!actx) return;
+  const f = freq(note);
+  const g = actx.createGain();
+  g.gain.value = 0;
+  g.connect(masterGain);
+  delayNode.connect(g);
+
+  const t = now();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(0.07, t + 1.8);
+  g.gain.setValueAtTime(0.07, t + dur - 2);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+  // 3 detuned oscillators per voice
+  for (let k = 0; k < 3; k++) {
+    const detune = (k - 1) * 6;
+    ['sine', 'triangle', 'sawtooth'].forEach((type, i) => {
+      if (i === 2) return; // skip sawtooth to keep it soft
+      const osc = actx.createOscillator();
+      osc.type = type;
+      osc.frequency.value = f;
+      osc.detune.value = detune + (i - 1) * 2;
+      const og = actx.createGain();
+      og.gain.value = i === 0 ? 0.8 : 0.2;
+      osc.connect(og);
+      og.connect(g);
+      osc.start(t);
+      osc.stop(t + dur + 0.2);
+    });
+  }
+
+  // Filter sweep
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 400;
+  filt.frequency.setValueAtTime(400, t);
+  filt.frequency.exponentialRampToValueAtTime(2400, t + dur * 0.5);
+  g.disconnect(masterGain);
+  g.connect(filt);
+  filt.connect(masterGain);
+  delayNode.disconnect(g);
+  delayNode.connect(filt);
+}
+
+// ─── CHORD PROGRESSION (ambient) ──────────────────────────────────────
+const AMBIENT_PROGRESSION = [
+  [42, 45, 49, 52], // Cmaj7
+  [44, 47, 51, 54], // Dm9
+  [43, 46, 50, 53], // Bm7
+  [41, 44, 48, 51], // Am7
+  [38, 42, 45, 49], // Em9
+  [40, 43, 47, 50], // F#m7
+  [39, 42, 46, 49], // Ebm7
+  [36, 40, 43, 47], // G#m7
+];
+
+let padTimer = 0;
+let padIndex = 0;
+
+function updateAmbient(dt) {
+  padTimer += dt;
+  const interval = 8; // seconds per chord change
+  if (padTimer > interval) {
+    padTimer = 0;
+    const chord = AMBIENT_PROGRESSION[padIndex % AMBIENT_PROGRESSION.length];
+    chord.forEach(n => playPad(n + 12, 10));
+    padIndex++;
+  }
+}
+
+// ─── BASS ENGINE (rhythmic) ────────────────────────────────────────────
+function playBass(note, dur) {
+  if (!actx) return;
+  const f = freq(note);
+  const g = actx.createGain();
+  g.gain.value = 0;
+  const t = now();
+  g.gain.setValueAtTime(0.5, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  g.connect(masterGain);
+  delayNode.connect(g);
+
+  const osc = actx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.value = f;
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 600;
+  filt.frequency.setValueAtTime(1200, t);
+  filt.frequency.exponentialRampToValueAtTime(250, t + dur * 0.7);
+
+  osc.connect(filt);
+  filt.connect(g);
+  osc.start(t);
+  osc.stop(t + dur + 0.1);
+}
+
+function playKick(when) {
+  if (!actx) return;
+  const osc = actx.createOscillator();
+  osc.frequency.setValueAtTime(180, when);
+  osc.frequency.exponentialRampToValueAtTime(40, when + 0.18);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.8, when);
+  g.gain.exponentialRampToValueAtTime(0.001, when + 0.32);
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.start(when);
+  osc.stop(when + 0.4);
+}
+
+function playSnare(when) {
+  if (!actx) return;
+  // noise burst
+  const bufLen = actx.sampleRate * 0.12;
+  const buf = actx.createBuffer(1, bufLen, actx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  const filt = actx.createBiquadFilter();
+  filt.type = 'bandpass';
+  filt.frequency.value = 2500;
+  filt.Q.value = 0.7;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.4, when);
+  g.gain.exponentialRampToValueAtTime(0.001, when + 0.14);
+  src.connect(filt);
+  filt.connect(g);
+  g.connect(masterGain);
+  src.start(when);
+  src.stop(when + 0.2);
+
+  // tonal body
+  const osc = actx.createOscillator();
+  osc.frequency.value = 220;
+  const og = actx.createGain();
+  og.gain.setValueAtTime(0.2, when);
+  og.gain.exponentialRampToValueAtTime(0.001, when + 0.06);
+  osc.connect(og);
+  og.connect(g);
+  osc.start(when);
+  osc.stop(when + 0.1);
+}
+
+function playHat(when, open = false) {
+  if (!actx) return;
+  const dur = open ? 0.35 : 0.08;
+  const bufLen = actx.sampleRate * dur;
+  const buf = actx.createBuffer(1, bufLen, actx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  const filt = actx.createBiquadFilter();
+  filt.type = 'highpass';
+  filt.frequency.value = 7000;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.18, when);
+  g.gain.exponentialRampToValueAtTime(0.001, when + dur);
+  src.connect(filt);
+  filt.connect(g);
+  g.connect(masterGain);
+  src.start(when);
+  src.stop(when + dur + 0.01);
+}
+
+// ─── MELODY ENGINE ──────────────────────────────────────────────────────
+const MEL_NOTES = [72, 74, 76, 79, 81, 83, 84, 86, 88, 91, 93, 95];
+const MEL_RHYTHMS = [0.25, 0.5, 0.5, 0.25, 0.75, 1.0];
+
+function scheduleMelody() {
+  if (!actx) return;
+  const barDur = 60 / bpm * 4;
+  const bars = 2;
+  const startTime = now() + 0.1;
+  const eighthTime = 60 / bpm / 2;
+
+  // Schedule 2 bars ahead
+  for (let bar = 0; bar < bars; bar++) {
+    const barStart = startTime + bar * barDur;
+    // Pick a motif of 4-6 notes
+    const motifLen = Math.floor(Math.random() * 3) + 4;
+    const notePositions = [0, 1, 3, 4, 5, 7]; // mostly on beats + upbeats
+    for (let i = 0; i < motifLen; i++) {
+      if (Math.random() < 0.7) {
+        const pos = notePositions[i % notePositions.length];
+        const n = MEL_NOTES[Math.floor(Math.random() * MEL_NOTES.length)];
+        const t = barStart + pos * eighthTime;
+        if (t > now()) playMelodyNote(n, t, eighthTime * 2.5);
+      }
+    }
+  }
+}
+
+function playMelodyNote(note, when, dur) {
+  if (!actx) return;
+  const f = freq(note);
+  const g = actx.createGain();
+  g.gain.value = 0;
+  g.gain.setValueAtTime(0, when);
+  g.gain.linearRampToValueAtTime(0.22, when + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.001, when + dur);
+
+  const osc = actx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(f, when);
+  osc.frequency.setValueAtTime(f * 1.002, when + dur * 0.3);
+
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.setValueAtTime(3000, when);
+  filt.frequency.exponentialRampToValueAtTime(800, when + dur * 0.6);
+
+  osc.connect(filt);
+  filt.connect(g);
+  g.connect(masterGain);
+  delayNode.connect(g);
+  osc.start(when);
+  osc.stop(when + dur + 0.1);
+}
+
+// ─── DRUM SCHEDULER ────────────────────────────────────────────────────
+const DRUM_PATTERN = [
+  // 16 steps (16th notes), each row: [kick, snare, hat, hatOpen]
+  [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,1,0], // kick
+  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0], // snare
+  [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0], // hat
+  [0,0,0,0, 0,0,0,1, 0,0,0,0, 0,0,0,1], // hatOpen
+];
+
+const BASS_PATTERN = [
+  [36,null,null,null, 36,null,null,null, 36,null,null,null, 36,null,null,null],
+  [null,null,36,null, null,null,36,null, null,null,36,null, null,null,36,null],
+  [null,null,null,null, 38,null,null,null, null,null,null,null, 40,null,null,null],
+  [null,null,null,null, null,null,null,null, null,null,41,null, null,null,null,41],
+];
+
+let step16 = 0;
+let nextBeatTime = 0;
+let schedBeatTime = 0;
+let melodyTimer = 0;
+const MELODY_INTERVAL = 7;
+
+function scheduleRhythmic() {
+  if (!actx) return;
+  const t = now();
+  const stepDur = 60 / bpm / 4; // 16th note duration
+
+  // Schedule 2 bars ahead
+  while (schedBeatTime < t + (60 / bpm) * 4) {
+    const step = step16 % 16;
+    const s = schedBeatTime;
+
+    if (DRUM_PATTERN[0][step]) playKick(s);
+    if (DRUM_PATTERN[1][step]) playSnare(s);
+    if (DRUM_PATTERN[2][step]) playHat(s, false);
+    if (DRUM_PATTERN[3][step]) playHat(s, true);
+
+    BASS_PATTERN.forEach((row, ri) => {
+      const note = row[step];
+      if (note !== null) {
+        const dur = stepDur * 3.5;
+        playBass(note, dur);
+      }
+    });
+
+    step16++;
+    schedBeatTime += stepDur;
+  }
+
+  // Schedule melody periodically
+  melodyTimer += 60 / bpm * 4; // advance by bar
+  if (melodyTimer > MELODY_INTERVAL) {
+    melodyTimer = 0;
+    scheduleMelody();
+  }
+}
+
+// ─── LFO PANNER ─────────────────────────────────────────────────────────
+let lfoOsc = null, lfoGainO = null, lfoPan = null;
+let panL, panR;
+
+function startLFO() {
+  if (lfoOsc) return;
+  lfoOsc = actx.createOscillator();
+  lfoOsc.type = 'sine';
+  lfoOsc.frequency.value = 0.15;
+  lfoGainO = actx.createGain();
+  lfoGainO.gain.value = 0.3;
+  lfoPan = actx.createStereoPanner();
+  lfoPan.pan.value = 0;
+  lfoOsc.connect(lfoGainO);
+  lfoGainO.connect(lfoPan.pan);
+  lfoPan.connect(masterGain);
+  lfoOsc.start();
+}
+
+function stopLFO() {
+  if (!lfoOsc) return;
+  lfoOsc.stop();
+  lfoOsc = lfoGainO = lfoPan = null;
+}
+
+// ─── PARTICLES ─────────────────────────────────────────────────────────
+class Particle {
+  constructor() { this.reset(); }
+
+  reset(x = W * 0.5, y = H * 0.5) {
+    this.x  = x + (Math.random() - 0.5) * 60;
+    this.y  = y + (Math.random() - 0.5) * 60;
+    this.vx = (Math.random() - 0.5) * 1.8;
+    this.vy = (Math.random() - 0.5) * 1.8;
+    this.life = 1;
+    this.decay = 0.002 + Math.random() * 0.003;
+    this.size = 0.8 + Math.random() * 1.6;
+    this.hue  = Math.random() * 360;
+    this.angle = Math.random() * Math.PI * 2;
+    this.spin = (Math.random() - 0.5) * 0.04;
+    this.sides = Math.floor(Math.random() * 3) + 3;
+    this.trail = [];
+  }
+
+  update() {
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 10) this.trail.shift();
+
+    this.angle += this.spin;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vx *= 0.993;
+    this.vy *= 0.993;
+    this.life -= this.decay;
+  }
+
+  draw() {
+    if (this.life <= 0) return;
+    const a = this.life;
+
+    // trail
+    ctx.beginPath();
+    for (let i = 0; i < this.trail.length; i++) {
+      const t = this.trail[i];
+      if (i === 0) ctx.moveTo(t.x, t.y);
+      else ctx.lineTo(t.x, t.y);
+    }
+    ctx.strokeStyle = `hsla(${this.hue},80%,70%,${a * 0.25})`;
+    ctx.lineWidth = this.size * 0.5;
+    ctx.stroke();
+
+    // polygon
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    ctx.beginPath();
+    for (let i = 0; i < this.sides; i++) {
+      const ang = (i / this.sides) * Math.PI * 2;
+      const r = this.size * (i % 2 === 0 ? 1 : 0.55);
+      const px = Math.cos(ang) * r;
+      const py = Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = `hsla(${this.hue},85%,68%,${a * 0.9})`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  dead() { return this.life <= 0; }
+}
+
+const particles = [];
+const MAX_PARTICLES = 280;
+
+// ─── VORTEX FIELD ──────────────────────────────────────────────────────
+function drawVortex(t) {
+  const cx = W / 2, cy = H / 2;
+  const res = 28;
+  const spacing = Math.min(W, H) / res;
+
+  for (let ix = 0; ix <= res; ix++) {
+    for (let iy = 0; iy <= res; iy++) {
+      const x = ix * spacing;
+      const y = iy * spacing;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy) + 0.001;
+      const maxR = Math.min(W, H) * 0.48;
+
+      if (dist > maxR) continue;
+
+      const angle = Math.atan2(dy, dx);
+      const flow  = t * 0.00025 + dist * 0.0006;
+      const wave  = Math.sin(angle * 3 + t * 0.0008 + dist * 0.01) * 14;
+      const pushR = (1 - dist / maxR) * wave;
+      const nx = Math.cos(angle + flow) * pushR;
+      const ny = Math.sin(angle + flow) * pushR;
+
+      const x2 = x + nx;
+      const y2 = y + ny;
+
+      const pulse = Math.sin(t * 0.001 + dist * 0.02) * 0.5 + 0.5;
+      const alpha = (1 - dist / maxR) * 0.18 * pulse;
+      if (alpha < 0.005) continue;
+
+      const hue = (dist * 0.4 + t * 0.015) % 360;
+      ctx.strokeStyle = `hsla(${hue},65%,65%,${alpha})`;
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+  }
+}
+
+// ─── BEAT FLASH ────────────────────────────────────────────────────────
+let beatFlash = 0;
+let beatHue = 0;
+
+function drawBeatOverlay() {
+  if (beatFlash <= 0) return;
+  const a = beatFlash * 0.12;
+  ctx.fillStyle = `hsla(${beatHue},80%,55%,${a})`;
+  ctx.fillRect(0, 0, W, H);
+  beatFlash = Math.max(0, beatFlash - 0.06);
+}
+
+// ─── RIPPLE WAVES ──────────────────────────────────────────────────────
+const ripples = [];
+
+function addRipple(x, y, hue) {
+  ripples.push({ x, y, r: 0, maxR: 220 + Math.random() * 120, life: 1, hue });
+}
+
+function updateRipples() {
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i];
+    r.r += 2.8;
+    r.life -= 0.012;
+    if (r.life <= 0 || r.r > r.maxR) { ripples.splice(i, 1); continue; }
+
+    const a = r.life * 0.4;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+    ctx.strokeStyle = `hsla(${r.hue},75%,60%,${a})`;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+}
+
+// ─── MOUSE INTERACTION ─────────────────────────────────────────────────
+let mouseX = W / 2, mouseY = H / 2;
+
+canvas.addEventListener('mousemove', e => {
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  if (started && Math.random() < 0.18) {
+    const hue = (time * 0.02) % 360;
+    addRipple(mouseX, mouseY, hue);
+    spawnParticle(mouseX, mouseY, 3);
+  }
+});
+
+canvas.addEventListener('click', e => {
+  if (!started) {
+    started = true;
+    initAudio();
+    $('hint').textContent = 'Move mouse to interact';
+    if (mode === 'ambient') {
+      AMBIENT_PROGRESSION[0].forEach(n => playPad(n + 12, 10));
+      padIndex = 1;
+      padTimer = 0;
+    }
+    return;
+  }
+  addRipple(e.clientX, e.clientY, (time * 0.02) % 360);
+  for (let i = 0; i < 8; i++) spawnParticle(e.clientX, e.clientY, 1.8);
+});
+
+// ─── PARTICLE SPAWNER ───────────────────────────────────────────────────
+function spawnParticle(x, y, speedMult = 1) {
+  if (particles.length >= MAX_PARTICLES) return;
+  const p = new Particle();
+  p.x = x + (Math.random() - 0.5) * 20;
+  p.y = y + (Math.random() - 0.5) * 20;
+  const ang = Math.random() * Math.PI * 2;
+  const spd = (0.8 + Math.random() * 1.2) * speedMult;
+  p.vx = Math.cos(ang) * spd;
+  p.vy = Math.sin(ang) * spd;
+  p.hue = (time * 0.015 + Math.random() * 60) % 360;
+  particles.push(p);
+}
+
+// ─── MODE SWITCHING ─────────────────────────────────────────────────────
+const modeBtn = $('mode-btn');
+modeBtn.addEventListener('click', () => {
+  mode = mode === 'ambient' ? 'rhythmic' : 'ambient';
+  modeBtn.textContent = mode === 'ambient' ? 'Ambient' : 'Rhythmic';
+  $('mode-label').textContent = mode === 'ambient' ? 'ambient flow' : 'rhythmic pulse';
+  $('hint').textContent = mode === 'ambient'
+    ? 'Move mouse to interact'
+    : 'Click to add beats';
+
+  if (mode === 'rhythmic') {
+    stopLFO();
+    step16 = 0;
+    schedBeatTime = now() + 0.2;
+    scheduleMelody();
+  } else {
+    startLFO();
+  }
+});
+
+function updateMode(dt) {
+  if (mode === 'ambient') {
+    updateAmbient(dt);
+  } else {
+    scheduleRhythmic();
+  }
+}
+
+// ─── BPM CONTROL ───────────────────────────────────────────────────────
+const bpmSlider = $('bpm-slider');
+const bpmValueEl = $('bpm-value');
+bpmSlider.addEventListener('input', () => {
+  bpm = parseInt(bpmSlider.value);
+  bpmValueEl.textContent = bpm;
+});
+
+// ─── COLOR PALETTE ─────────────────────────────────────────────────────
+function getBg() {
+  if (mode === 'rhythmic') {
+    const hue = beatHue;
+    return `hsl(${(hue + 30) % 360},12%,4%)`;
+  }
+  return 'hsl(230,20%,3%)';
+}
+
+// ─── HEARTBEAT KICK (for beat sync) ────────────────────────────────────
+function triggerBeatFlash(hue) {
+  beatFlash = 1.0;
+  beatHue = hue;
+}
+
+// ─── MAIN LOOP ─────────────────────────────────────────────────────────
+function loop(ts) {
+  const dt = lastTs ? (ts - lastTs) * 0.001 : 0.016;
+  lastTs = ts;
+  time = ts;
+
+  if (!started) {
+    // Idle animation
+    ctx.fillStyle = 'hsl(230,20%,3%)';
+    ctx.fillRect(0, 0, W, H);
+    drawVortex(ts * 0.5);
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  updateMode(dt);
+
+  // Clear with slight trail effect
+  ctx.fillStyle = getBg();
+  ctx.fillRect(0, 0, W, H);
+
+  drawVortex(ts);
+  updateRipples();
+
+  // Update & draw particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    particles[i].update();
+    particles[i].draw();
+    if (particles[i].dead()) particles.splice(i, 1);
+  }
+
+  // Ambient particle emission from center
+  if (mode === 'ambient' && Math.random() < 0.08) {
+    spawnParticle(W * 0.5, H * 0.5, 0.6);
+  }
+
+  // Rhythmic beat pulse
+  if (mode === 'rhythmic') {
+    const beatInterval = 60 / bpm;
+    const beatFrac = ((ts * 0.001) % beatInterval) / beatInterval;
+    if (beatFrac < 0.04) {
+      const hue = (ts * 0.01) % 360;
+      triggerBeatFlash(hue);
+      // Ripple burst on beat
+      if (Math.random() < 0.5) addRipple(W * 0.5 + (Math.random()-0.5)*200, H * 0.5 + (Math.random()-0.5)*150, hue);
+    }
+  }
+
+  drawBeatOverlay();
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+[
+  {
+    "slug": "morphix",
+    "title": "Morphix",
+    "tagline": "Live GLSL playground for shader experiments and visual instruments.",
+    "category": "Shader Lab",
+    "runtime": "static",
+    "entry": "apps/morphix/index.html",
+    "source": "https://github.com/daniel-silva-perez/morphix"
+  },
+  {
+    "slug": "neon-flock",
+    "title": "Neon Flock",
+    "tagline": "Murmuration simulator focused on emergent flocking and motion design.",
+    "category": "Simulation",
+    "runtime": "static",
+    "entry": "apps/neon-flock/index.html",
+    "source": "https://github.com/daniel-silva-perez/neon-flock"
+  },
+  {
+    "slug": "echo-chamber",
+    "title": "Echo Chamber",
+    "tagline": "Spatial audio memory palace with voice, navigation, and directional playback.",
+    "category": "Spatial Audio",
+    "runtime": "static",
+    "entry": "apps/echo-chamber/index.html",
+    "source": "https://github.com/daniel-silva-perez/echo-chamber"
+  },
+  {
+    "slug": "abyssal-garden",
+    "title": "Abyssal Garden",
+    "tagline": "Generative bioluminescent deep-ocean world with ambient atmosphere.",
+    "category": "Generative World",
+    "runtime": "static",
+    "entry": "apps/abyssal-garden/index.html",
+    "source": "https://github.com/daniel-silva-perez/abyssal-garden"
+  },
+  {
+    "slug": "flow-state",
+    "title": "Flow State",
+    "tagline": "Audio-visual synthesizer that turns sound into reactive visual worlds.",
+    "category": "Audio Reactive",
+    "runtime": "node",
+    "entry": "apps/flow-state/index.html",
+    "source": "https://github.com/daniel-silva-perez/flow-state"
+  },
+  {
+    "slug": "void-walker",
+    "title": "Void Walker",
+    "tagline": "Procedural space exploration game built as a TypeScript + Vite app.",
+    "category": "Game",
+    "runtime": "vite",
+    "entry": "apps/void-walker/index.html",
+    "source": "https://github.com/daniel-silva-perez/void-walker"
+  },
+  {
+    "slug": "luminal-threads",
+    "title": "Luminal Threads",
+    "tagline": "Harmonic resonance visualizer made of glowing audio-reactive threads.",
+    "category": "Audio Reactive",
+    "runtime": "static",
+    "entry": "apps/luminal-threads/index.html",
+    "source": "https://github.com/daniel-silva-perez/luminal-threads"
+  },
+  {
+    "slug": "orbital-siege",
+    "title": "Orbital Siege",
+    "tagline": "Orbital defense game with waves, projectiles, and procedural space combat.",
+    "category": "Game",
+    "runtime": "static",
+    "entry": "apps/orbital-siege/index.html",
+    "source": "https://github.com/daniel-silva-perez/orbital-siege"
+  },
+  {
+    "slug": "sonic-bloom",
+    "title": "Sonic Bloom",
+    "tagline": "Particle ecosystem driven by bass, mids, and treble in real time.",
+    "category": "Audio Reactive",
+    "runtime": "static",
+    "entry": "apps/sonic-bloom/index.html",
+    "source": "https://github.com/daniel-silva-perez/sonic-bloom"
+  },
+  {
+    "slug": "collab-whiteboard",
+    "title": "Collab Whiteboard",
+    "tagline": "Real-time collaborative canvas with cursors, drawing sync, and WebSockets.",
+    "category": "Realtime",
+    "runtime": "bun",
+    "entry": "apps/collab-whiteboard/index.html",
+    "source": "https://github.com/daniel-silva-perez/collab-whiteboard"
+  }
+]

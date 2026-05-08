@@ -1,0 +1,13 @@
+{
+  "name": "flow-state",
+  "version": "1.0.0",
+  "description": "Real-time generative audio-visual flow synthesizer",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

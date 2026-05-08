@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orbital Siege — Defend the Station</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #ui {
+    position: absolute; top: 16px; left: 16px; color: #0ff;
+    font-size: 14px; pointer-events: none; line-height: 1.7;
+    text-shadow: 0 0 8px #0ff;
+  }
+  #ui b { color: #fff; }
+  #right {
+    position: absolute; top: 16px; right: 16px; color: #f0f;
+    font-size: 13px; pointer-events: none; line-height: 1.8;
+    text-align: right; text-shadow: 0 0 8px #f0f;
+  }
+  #center-msg {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    color: #fff; font-size: 28px; text-align: center; pointer-events: none;
+    text-shadow: 0 0 20px #0ff; display: none;
+  }
+  #center-msg small { display: block; font-size: 14px; margin-top: 8px; color: #aaa; }
+  #controls-hint {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    color: #555; font-size: 12px; text-align: center; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <b>⌖ ORBITAL SIEGE ⌖</b><br>
+  Wave: <b id="wave">1</b> &nbsp;|&nbsp; Score: <b id="score">0</b><br>
+  Hull: <b id="hull">100</b>% &nbsp;|&nbsp; Shields: <b id="shields">100</b>%<br>
+  Platforms: <b id="plat-count">0</b> &nbsp;|&nbsp; Energy: <b id="energy">100</b>
+</div>
+<div id="right">
+  <b>CONTROLS</b><br>
+  SPACE — Place Platform<br>
+  LMB — Fire Turret<br>
+  RMB — Shield Burst<br>
+  WASD — Move Camera<br>
+  1-4 — Weapon Modes<br>
+</div>
+<div id="center-msg" id="center-msg">
+  <b id="msg-title">WAVE 1</b>
+  <small id="msg-sub">Click to Begin</small>
+</div>
+<div id="controls-hint">Orbital Siege — Defend your station against 20 waves of alien attackers</div>
+<script>
+// ─── SETUP ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = canvas.width = window.innerWidth;
+let H = canvas.height = window.innerHeight;
+
+const TAU = Math.PI * 2;
+let gameTime = 0;
+let lastTime = 0;
+let running = false;
+let gameOver = false;
+let paused = false;
+
+// Camera
+let camX = 0, camY = 0;
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'KeyP') paused = !paused;
+  if (e.code === 'Space' && !running && !gameOver) startGame();
+  if (e.code === 'Space' && gameOver) resetGame();
+  // weapon mode
+  if (e.code >= 'Digit1' && e.code <= 'Digit4') {
+    player.weaponMode = parseInt(e.code.slice(-1)) - 1;
+  }
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+let mouseX = 0, mouseY = 0, mouseDown = false, rmouseDown = false;
+let worldMouseX = 0, worldMouseY = 0;
+
+canvas.addEventListener('mousemove', e => {
+  mouseX = e.clientX; mouseY = e.clientY;
+  worldMouseX = mouseX - W / 2 + camX;
+  worldMouseY = mouseY - H / 2 + camY;
+});
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) mouseDown = true;
+  if (e.button === 2) rmouseDown = true;
+  if (!running && !gameOver && e.button === 0) startGame();
+  if (gameOver && e.button === 0) resetGame();
+});
+canvas.addEventListener('mouseup', e => {
+  if (e.button === 0) mouseDown = false;
+  if (e.button === 2) rmouseDown = false;
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('resize', () => {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+});
+
+// ─── UTILITIES ────────────────────────────────────────────────────────────────
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+
+function hsl(h, s, l, a = 1) {
+  return `hsla(${h},${s}%,${l}%,${a})`;
+}
+
+function lerpColor(c1, c2, t) {
+  return [
+    lerp(c1[0], c2[0], t),
+    lerp(c1[1], c2[1], t),
+    lerp(c1[2], c2[2], t),
+  ];
+}
+
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return [r,g,b];
+}
+
+// ─── PARTICLES ────────────────────────────────────────────────────────────────
+const particles = [];
+const MAX_PARTICLES = 4000;
+
+function spawnParticle(x, y, vx, vy, color, life, size, gravity = 0) {
+  if (particles.length >= MAX_PARTICLES) return;
+  particles.push({ x, y, vx, vy, color, life, maxLife: life, size, gravity, trail: [] });
+}
+
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.vy += p.gravity * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    // drag
+    p.vx *= 0.98;
+    p.vy *= 0.98;
+    if (p.trail) {
+      p.trail.push({ x: p.x, y: p.y });
+      if (p.trail.length > 8) p.trail.shift();
+    }
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x - camX + W/2, p.y - camY + H/2, p.size * alpha, 0, TAU);
+    ctx.fill();
+    if (p.trail && p.trail.length > 1) {
+      ctx.globalAlpha = alpha * 0.4;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.size * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(p.trail[0].x - camX + W/2, p.trail[0].y - camY + H/2);
+      for (const t of p.trail) ctx.lineTo(t.x - camX + W/2, t.y - camY + H/2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── STARS ────────────────────────────────────────────────────────────────────
+const stars = Array.from({ length: 300 }, () => ({
+  x: rnd(-W*2, W*2), y: rnd(-H*2, H*2), size: rnd(0.5, 2),
+  brightness: rnd(0.3, 1), twinkle: rnd(0, TAU),
+}));
+
+function drawStars() {
+  for (const s of stars) {
+    const sx = ((s.x - camX * 0.3) % W + W) % W;
+    const sy = ((s.y - camY * 0.3) % H + H) % H;
+    const flicker = 0.7 + 0.3 * Math.sin(gameTime * rnd(1,3) + s.twinkle);
+    ctx.globalAlpha = s.brightness * flicker;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(sx, sy, s.size, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── PLAYER / STATION ─────────────────────────────────────────────────────────
+const player = {
+  x: 0, y: 0,
+  hull: 100, maxHull: 100,
+  shields: 100, maxShields: 100,
+  shieldRegen: 8,    // per second
+  weaponMode: 0,    // 0=scatter, 1=beam, 2=missile, 3=rail
+  energy: 100, maxEnergy: 100,
+  energyRegen: 15,
+  shieldBurstCooldown: 0,
+  invincible: 0,
+  cameraShake: 0,
+  score: 0,
+};
+
+const platforms = []; // orbital platforms
+const bullets = [];
+const enemies = [];
+const enemyBullets = [];
+const pickups = [];
+const explosions = [];
+
+const WEAPONS = [
+  { name: 'Scatter Cannon', color: '#0ff', cost: 0, cooldown: 0.18, speed: 700, damage: 8, spread: 0.3, count: 3, homing: false },
+  { name: 'Plasma Beam',    color: '#f0f', cost: 0, cooldown: 0.06, speed: 1200, damage: 4, spread: 0, count: 1, homing: false },
+  { name: 'Homing Missile', color: '#ff0', cost: 15, cooldown: 0.8, speed: 400, damage: 30, spread: 0, count: 1, homing: true },
+  { name: 'Railgun',        color: '#0f0', cost: 25, cooldown: 1.2, speed: 2000, damage: 60, spread: 0, count: 1, homing: false },
+];
+
+function drawPlayer() {
+  const sx = player.x - camX + W/2;
+  const sy = player.y - camY + H/2;
+  const pulse = 1 + 0.05 * Math.sin(gameTime * 4);
+  const invAlpha = player.invincible > 0 ? 0.4 + 0.6 * Math.sin(gameTime * 20) : 1;
+  ctx.globalAlpha = invAlpha;
+
+  // Outer glow ring
+  const glowGrad = ctx.createRadialGradient(sx, sy, 10, sx, sy, 60 * pulse);
+  glowGrad.addColorStop(0, 'rgba(0,200,255,0.3)');
+  glowGrad.addColorStop(1, 'rgba(0,200,255,0)');
+  ctx.fillStyle = glowGrad;
+  ctx.beginPath();
+  ctx.arc(sx, sy, 60 * pulse, 0, TAU);
+  ctx.fill();
+
+  // Station body
+  ctx.strokeStyle = '#0cf';
+  ctx.lineWidth = 2;
+  ctx.fillStyle = 'rgba(0,30,60,0.9)';
+  ctx.beginPath();
+  // Hexagon
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * TAU - Math.PI / 6 + gameTime * 0.1;
+    const r = 30;
+    const px = sx + Math.cos(angle) * r;
+    const py = sy + Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Inner core
+  ctx.fillStyle = `hsl(${(gameTime * 100) % 360}, 100%, 60%)`;
+  ctx.beginPath();
+  ctx.arc(sx, sy, 12 * pulse, 0, TAU);
+  ctx.fill();
+
+  // Shield bubble
+  if (player.shields > 0) {
+    const shieldAlpha = (player.shields / player.maxShields) * 0.3;
+    ctx.strokeStyle = `rgba(0,200,255,${shieldAlpha + 0.1})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 50, 0, TAU);
+    ctx.stroke();
+    // Shield shimmer
+    ctx.strokeStyle = `rgba(100,220,255,${shieldAlpha * 0.5})`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 8]);
+    ctx.beginPath();
+    ctx.arc(sx, sy, 50 + 3 * Math.sin(gameTime * 3), 0, TAU);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+function updatePlayer(dt) {
+  // Camera movement with WASD
+  const camSpeed = 300;
+  if (keys['KeyW'] || keys['ArrowUp'])    camY -= camSpeed * dt;
+  if (keys['KeyS'] || keys['ArrowDown'])  camY += camSpeed * dt;
+  if (keys['KeyA'] || keys['ArrowLeft'])  camX -= camSpeed * dt;
+  if (keys['KeyD'] || keys['ArrowRight']) camX += camSpeed * dt;
+
+  // Keep player centered in world (camera follows)
+  camX = lerp(camX, player.x, 2 * dt);
+  camY = lerp(camY, player.y, 2 * dt);
+
+  // Energy regen
+  player.energy = Math.min(player.maxEnergy, player.energy + player.energyRegen * dt);
+
+  // Shield regen
+  if (player.shields < player.maxShields) {
+    player.shields = Math.min(player.maxShields, player.shields + player.shieldRegen * dt);
+  }
+
+  // Cooldowns
+  if (player.shieldBurstCooldown > 0) player.shieldBurstCooldown -= dt;
+  if (player.invincible > 0) player.invincible -= dt;
+  if (player.cameraShake > 0) player.cameraShake -= dt;
+
+  // Fire weapon
+  if (mouseDown) fireWeapon();
+
+  // Shield burst (right click)
+  if (rmouseDown && player.shieldBurstCooldown <= 0 && player.shields > 20) {
+    shieldBurst();
+  }
+}
+
+let fireCooldown = 0;
+function fireWeapon() {
+  const w = WEAPONS[player.weaponMode];
+  if (fireCooldown > 0 || player.energy < w.cost) return;
+  fireCooldown = w.cooldown;
+  player.energy -= w.cost;
+
+  const angle = Math.atan2(worldMouseY - player.y, worldMouseX - player.x);
+
+  for (let i = 0; i < w.count; i++) {
+    const spread = (i - (w.count - 1) / 2) * w.spread;
+    const a = angle + spread + rnd(-0.05, 0.05);
+    bullets.push({
+      x: player.x + Math.cos(angle) * 40,
+      y: player.y + Math.sin(angle) * 40,
+      vx: Math.cos(a) * w.speed,
+      vy: Math.sin(a) * w.speed,
+      damage: w.damage,
+      color: w.color,
+      homing: w.homing,
+      life: 3,
+      trail: [],
+    });
+  }
+}
+
+function shieldBurst() {
+  player.shields -= 20;
+  player.shieldBurstCooldown = 5;
+  // Kill all enemy bullets in radius
+  const radius = 250;
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const b = enemyBullets[i];
+    if (dist(player.x, player.y, b.x, b.y) < radius) {
+      // Block effect
+      for (let k = 0; k < 6; k++) {
+        const a = rnd(0, TAU);
+        spawnParticle(b.x, b.y, Math.cos(a)*rnd(50,150), Math.sin(a)*rnd(50,150), '#0ff', 0.5, 3);
+      }
+      enemyBullets.splice(i, 1);
+    }
+  }
+  // Visual ring
+  explosions.push({ x: player.x, y: player.y, radius: 0, maxRadius: radius, color: 'rgba(0,200,255,0.5)', life: 0.4 });
+}
+
+function updateBullets(dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.trail.push({ x: b.x, y: b.y });
+    if (b.trail.length > 10) b.trail.shift();
+
+    if (b.homing) {
+      // Find nearest enemy
+      let target = null, minD = 400;
+      for (const e of enemies) {
+        const d = dist(b.x, b.y, e.x, e.y);
+        if (d < minD) { minD = d; target = e; }
+      }
+      if (target) {
+        const angle = Math.atan2(target.y - b.y, target.x - b.x);
+        const curAngle = Math.atan2(b.vy, b.vx);
+        const diff = angle - curAngle;
+        const turn = clamp(diff, -3 * dt, 3 * dt);
+        const speed = Math.hypot(b.vx, b.vy);
+        const newAngle = curAngle + turn;
+        b.vx = Math.cos(newAngle) * speed;
+        b.vy = Math.sin(newAngle) * speed;
+      }
+    }
+
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (b.life <= 0) { bullets.splice(i, 1); continue; }
+
+    // Hit enemies
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (dist(b.x, b.y, e.x, e.y) < e.radius + 5) {
+        e.hp -= b.damage;
+        // Hit sparks
+        for (let k = 0; k < 4; k++) {
+          spawnParticle(b.x, b.y, rnd(-100,100), rnd(-100,100), b.color, 0.3, 2, 0);
+        }
+        bullets.splice(i, 1);
+        if (e.hp <= 0) killEnemy(j) ;
+        break;
+      }
+    }
+  }
+
+  // Enemy bullets
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const b = enemyBullets[i];
+    b.trail.push({ x: b.x, y: b.y });
+    if (b.trail.length > 6) b.trail.shift();
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (b.life <= 0) { enemyBullets.splice(i, 1); continue; }
+    // Hit player
+    if (player.invincible <= 0 && dist(b.x, b.y, player.x, player.y) < 50) {
+      const dmg = b.damage;
+      if (player.shields > 0) {
+        const absorbed = Math.min(player.shields, dmg);
+        player.shields -= absorbed;
+        dmg -= absorbed;
+      }
+      player.hull -= dmg;
+      player.invincible = 0.5;
+      player.cameraShake = 0.3;
+      enemyBullets.splice(i, 1);
+      if (player.hull <= 0) endGame();
+    }
+  }
+}
+
+function drawBullets() {
+  for (const b of bullets) {
+    const sx = b.x - camX + W/2;
+    const sy = b.y - camY + H/2;
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = b.color;
+    ctx.shadowBlur = 10;
+    if (b.trail.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(b.trail[0].x - camX + W/2, b.trail[0].y - camY + H/2);
+      for (const t of b.trail) ctx.lineTo(t.x - camX + W/2, t.y - camY + H/2);
+      ctx.lineTo(sx, sy);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(sx, sy, b.homing ? 5 : 3, 0, TAU);
+    ctx.fillStyle = b.color;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  for (const b of enemyBullets) {
+    const sx = b.x - camX + W/2;
+    const sy = b.y - camY + H/2;
+    ctx.fillStyle = b.color;
+    ctx.shadowColor = b.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, TAU);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+
+// ─── PLATFORMS ────────────────────────────────────────────────────────────────
+function placePlatform() {
+  if (platforms.length >= 8) return;
+  const angle = Math.atan2(worldMouseY - player.y, worldMouseX - player.x);
+  const dist2 = Math.min(dist(player.x, player.y, worldMouseX, worldMouseY), 300);
+  const px = player.x + Math.cos(angle) * dist2;
+  const py = player.y + Math.sin(angle) * dist2;
+
+  // Check not too close to existing platforms
+  for (const p of platforms) {
+    if (dist(px, py, p.x, p.y) < 50) return;
+  }
+
+  platforms.push({
+    x: px, y: py,
+    angle: 0,
+    cooldown: 0,
+    hp: 80,
+    radius: 18,
+    size: 16,
+    target: null,
+    flashTime: 0,
+  });
+
+  // Placement effect
+  for (let i = 0; i < 20; i++) {
+    const a = rnd(0, TAU);
+    spawnParticle(px, py, Math.cos(a)*rnd(80,200), Math.sin(a)*rnd(80,200), '#0f0', 0.6, 3);
+  }
+}
+
+function updatePlatforms(dt) {
+  for (const p of platforms) {
+    p.cooldown -= dt;
+    p.angle += 0.5 * dt;
+    if (p.flashTime > 0) p.flashTime -= dt;
+
+    // Auto-target nearest enemy
+    let nearest = null, minD = 400;
+    for (const e of enemies) {
+      const d = dist(p.x, p.y, e.x, e.y);
+      if (d < minD) { minD = d; nearest = e; }
+    }
+    p.target = nearest;
+
+    if (p.cooldown <= 0 && nearest) {
+      // Fire at target
+      const angle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
+      bullets.push({
+        x: p.x + Math.cos(angle) * 20,
+        y: p.y + Math.sin(angle) * 20,
+        vx: Math.cos(angle) * 500,
+        vy: Math.sin(angle) * 500,
+        damage: 12,
+        color: '#0f8',
+        homing: false,
+        life: 2.5,
+        trail: [],
+      });
+      p.cooldown = 0.6;
+      p.flashTime = 0.1;
+    }
+  }
+}
+
+function drawPlatforms() {
+  for (const p of platforms) {
+    const sx = p.x - camX + W/2;
+    const sy = p.y - camY + H/2;
+
+    // Range indicator
+    ctx.strokeStyle = 'rgba(0,255,100,0.05)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 200, 0, TAU);
+    ctx.stroke();
+
+    // Platform body (diamond)
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(p.angle);
+
+    if (p.flashTime > 0) {
+      ctx.shadowColor = '#0f0';
+      ctx.shadowBlur = 20;
+    }
+
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(0,30,20,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(0, -p.size);
+    ctx.lineTo(p.size, 0);
+    ctx.lineTo(0, p.size);
+    ctx.lineTo(-p.size, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Turret barrel
+    if (p.target) {
+      const angle = Math.atan2(p.target.y - p.y, p.target.x - p.x);
+      ctx.strokeStyle = '#0f0';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(angle) * 20, Math.sin(angle) * 20);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    ctx.shadowBlur = 0;
+
+    // HP bar
+    const hpFrac = p.hp / 80;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(sx - 15, sy + p.size + 4, 30, 4);
+    ctx.fillStyle = hpFrac > 0.5 ? '#0f0' : hpFrac > 0.25 ? '#ff0' : '#f00';
+    ctx.fillRect(sx - 15, sy + p.size + 4, 30 * hpFrac, 4);
+  }
+}
+
+// ─── ENEMIES ──────────────────────────────────────────────────────────────────
+const ENEMY_TYPES = [
+  { name: 'Drone',      color: '#f44', hp: 20,  speed: 80,  size: 12, score: 10,  attacks: ['shoot'] },
+  { name: 'Fighter',   color: '#f80', hp: 50,  speed: 100, size: 16, score: 25,  attacks: ['shoot', 'chase'] },
+  { name: 'Cruiser',    color: '#a0f', hp: 120, speed: 50,  size: 24, score: 50,  attacks: ['spread', 'chase'] },
+  { name: 'Carrier',    color: '#f0a', hp: 200, speed: 30,  size: 32, score: 100, attacks: ['spread', 'spawn'] },
+  { name: 'Mothership', color: '#fff', hp: 400, speed: 20,  size: 48, score: 250, attacks: ['spread', 'homing'] },
+];
+
+let waveNumber = 1;
+let enemiesInWave = 0;
+let enemiesSpawned = 0;
+let spawnTimer = 0;
+let waveDelay = 0;
+let totalWaves = 20;
+
+function getWaveConfig(wave) {
+  const t = wave / totalWaves;
+  const count = Math.floor(3 + wave * 1.8);
+  const types = wave < 3  ? ['Drone']
+              : wave < 6  ? ['Drone', 'Fighter']
+              : wave < 10 ? ['Drone', 'Fighter', 'Cruiser']
+              : wave < 15 ? ['Fighter', 'Cruiser', 'Carrier']
+              :             ['Cruiser', 'Carrier', 'Mothership'];
+  const hpMult = 1 + t * 1.5;
+  const speedMult = 1 + t * 0.4;
+  return { count, types, hpMult, speedMult };
+}
+
+function spawnEnemy() {
+  const cfg = getWaveConfig(waveNumber);
+  const typeName = cfg.types[Math.floor(Math.random() * cfg.types.length)];
+  const type = ENEMY_TYPES.find(t => t.name === typeName);
+
+  // Spawn from edge of screen (outside viewport)
+  const angle = rnd(0, TAU);
+  const spawnDist = Math.max(W, H) * 0.8;
+  const ex = player.x + Math.cos(angle) * spawnDist;
+  const ey = player.y + Math.sin(angle) * spawnDist;
+
+  enemies.push({
+    x: ex, y: ey,
+    vx: 0, vy: 0,
+    hp: type.hp * cfg.hpMult,
+    maxHp: type.hp * cfg.hpMult,
+    speed: type.speed * cfg.speedMult,
+    radius: type.size,
+    color: type.color,
+    name: type.name,
+    score: type.score,
+    attacks: type.attacks,
+    attackTimer: rnd(0.5, 2),
+    attackCooldown: 2,
+    angle: Math.atan2(ey, ex),
+    targetX: player.x, targetY: player.y,
+    wobble: rnd(0, TAU),
+  });
+}
+
+function updateEnemies(dt) {
+  // Spawn wave enemies
+  const cfg = getWaveConfig(waveNumber);
+  if (enemiesSpawned < cfg.count && waveDelay <= 0) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnEnemy();
+      enemiesSpawned++;
+      spawnTimer = 1.5 - Math.min(1.2, waveNumber * 0.06);
+    }
+  }
+
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.wobble += 2 * dt;
+    e.attackTimer -= dt;
+
+    // Move toward player with wobble
+    const angle = Math.atan2(player.y - e.y, player.x - e.x);
+    e.angle = lerp(e.angle, angle, 2 * dt);
+    const wobbleAngle = e.angle + Math.sin(e.wobble) * 0.5;
+
+    e.x += Math.cos(wobbleAngle) * e.speed * dt;
+    e.y += Math.sin(wobbleAngle) * e.speed * dt;
+
+    // Attack
+    if (e.attackTimer <= 0 && dist(e.x, e.y, player.x, player.y) < 500) {
+      e.attackTimer = e.attackCooldown + rnd(0, 1);
+      if (e.attacks.includes('shoot')) {
+        const a = Math.atan2(player.y - e.y, player.x - e.x);
+        enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(a)*200, vy: Math.sin(a)*200, damage: 8, color: e.color, life: 4, trail: [] });
+      }
+      if (e.attacks.includes('spread')) {
+        for (let k = -1; k <= 1; k++) {
+          const a = Math.atan2(player.y - e.y, player.x - e.x) + k * 0.4;
+          enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(a)*180, vy: Math.sin(a)*180, damage: 6, color: e.color, life: 4, trail: [] });
+        }
+      }
+      if (e.attacks.includes('homing')) {
+        enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(angle)*150, vy: Math.sin(angle)*150, damage: 15, color: '#f0a', life: 5, trail: [], homing: true, homeSpeed: 80 });
+      }
+    }
+
+    // Collide with player
+    if (dist(e.x, e.y, player.x, player.y) < 60) {
+      if (player.invincible <= 0) {
+        player.hull -= 15;
+        player.invincible = 1;
+        player.cameraShake = 0.5;
+      }
+      // Push enemy back
+      const pushAngle = Math.atan2(e.y - player.y, e.x - player.x);
+      e.x += Math.cos(pushAngle) * 50;
+      e.y += Math.sin(pushAngle) * 50;
+    }
+
+    // Collide with platforms
+    for (const p of platforms) {
+      if (dist(e.x, e.y, p.x, p.y) < p.radius + e.radius) {
+        const pushAngle = Math.atan2(e.y - p.y, e.x - p.x);
+        e.x += Math.cos(pushAngle) * 100 * dt;
+        e.y += Math.sin(pushAngle) * 100 * dt;
+        p.hp -= 5 * dt;
+        if (p.hp <= 0) {
+          // Platform destroyed
+          const idx = platforms.indexOf(p);
+          if (idx !== -1) {
+            explosions.push({ x: p.x, y: p.y, radius: 0, maxRadius: 60, color: 'rgba(0,255,0,0.6)', life: 0.5 });
+            for (let k = 0; k < 30; k++) {
+              const a = rnd(0, TAU);
+              spawnParticle(p.x, p.y, Math.cos(a)*rnd(50,200), Math.sin(a)*rnd(50,200), '#0f0', 0.8, 4);
+            }
+            platforms.splice(idx, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // Remove dead enemies
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i].hp <= 0) killEnemy(i);
+  }
+
+  // Wave check
+  if (enemiesSpawned >= cfg.count && enemies.length === 0 && waveDelay <= 0) {
+    waveDelay = 3;
+    waveNumber++;
+    enemiesSpawned = 0;
+    enemiesInWave = cfg.count;
+    if (waveNumber > totalWaves) winGame();
+  }
+}
+
+function killEnemy(i) {
+  const e = enemies[i];
+  player.score += e.score;
+
+  // Explosion
+  explosions.push({ x: e.x, y: e.y, radius: 0, maxRadius: e.radius * 3, color: e.color, life: 0.6 });
+  for (let k = 0; k < 20; k++) {
+    const a = rnd(0, TAU);
+    const speed = rnd(50, 250);
+    spawnParticle(e.x, e.y, Math.cos(a)*speed, Math.sin(a)*speed, e.color, rnd(0.4, 1), rnd(2, 5));
+  }
+
+  // Chance to drop pickup
+  if (Math.random() < 0.3) {
+    const type = Math.random() < 0.6 ? 'energy' : 'health';
+    pickups.push({ x: e.x, y: e.y, vx: rnd(-30,30), vy: rnd(-30,30), type, life: 10, radius: 8 });
+  }
+
+  enemies.splice(i, 1);
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const sx = e.x - camX + W/2;
+    const sy = e.y - camY + H/2;
+
+    // Glow
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 15;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(e.angle);
+
+    ctx.strokeStyle = e.color;
+    ctx.lineWidth = 2;
+    ctx.fillStyle = `${e.color}22`;
+
+    if (e.name === 'Drone') {
+      ctx.beginPath();
+      ctx.arc(0, 0, e.radius, 0, TAU);
+      ctx.fill(); ctx.stroke();
+    } else if (e.name === 'Fighter') {
+      ctx.beginPath();
+      ctx.moveTo(e.radius, 0);
+      ctx.lineTo(-e.radius * 0.8, e.radius * 0.7);
+      ctx.lineTo(-e.radius * 0.5, 0);
+      ctx.lineTo(-e.radius * 0.8, -e.radius * 0.7);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    } else if (e.name === 'Cruiser') {
+      ctx.beginPath();
+      ctx.moveTo(e.radius, 0);
+      ctx.lineTo(0, e.radius * 0.8);
+      ctx.lineTo(-e.radius, e.radius * 0.4);
+      ctx.lineTo(-e.radius * 0.5, 0);
+      ctx.lineTo(-e.radius, -e.radius * 0.4);
+      ctx.lineTo(0, -e.radius * 0.8);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    } else {
+      // Carrier / Mothership — large hexagon
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU;
+        const r = e.radius;
+        if (i === 0) ctx.moveTo(Math.cos(a)*r, Math.sin(a)*r);
+        else ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
+      }
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      // Inner detail
+      ctx.strokeStyle = e.color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU + Math.PI / 6;
+        const r = e.radius * 0.5;
+        if (i === 0) ctx.moveTo(Math.cos(a)*r, Math.sin(a)*r);
+        else ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    ctx.restore();
+
+    // HP bar
+    const hpFrac = e.hp / e.maxHp;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(sx - e.radius, sy - e.radius - 10, e.radius * 2, 4);
+    ctx.fillStyle = hpFrac > 0.5 ? '#0f0' : hpFrac > 0.25 ? '#ff0' : '#f00';
+    ctx.fillRect(sx - e.radius, sy - e.radius - 10, e.radius * 2 * hpFrac, 4);
+
+    ctx.shadowBlur = 0;
+  }
+}
+
+// ─── PICKUPS ──────────────────────────────────────────────────────────────────
+function updatePickups(dt) {
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.95;
+    p.vy *= 0.95;
+
+    if (p.life <= 0) { pickups.splice(i, 1); continue; }
+
+    // Collect
+    if (dist(p.x, p.y, player.x, player.y) < 40) {
+      if (p.type === 'energy') player.energy = Math.min(player.maxEnergy, player.energy + 30);
+      else player.hull = Math.min(player.maxHull, player.hull + 15);
+      // Collect effect
+      for (let k = 0; k < 8; k++) {
+        const a = rnd(0, TAU);
+        spawnParticle(p.x, p.y, Math.cos(a)*80, Math.sin(a)*80, p.type === 'energy' ? '#ff0' : '#0f0', 0.4, 3);
+      }
+      pickups.splice(i, 1);
+    }
+  }
+}
+
+function drawPickups() {
+  for (const p of pickups) {
+    const sx = p.x - camX + W/2;
+    const sy = p.y - camY + H/2;
+    const pulse = 1 + 0.3 * Math.sin(gameTime * 6);
+    const color = p.type === 'energy' ? '#ff0' : '#0f0';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(sx, sy, p.radius * pulse, 0, TAU);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Blink near end
+    if (p.life < 3) ctx.globalAlpha = 0.3 + 0.7 * (Math.sin(gameTime * 10) > 0 ? 1 : 0);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── EXPLOSIONS / EFFECTS ─────────────────────────────────────────────────────
+function updateExplosions(dt) {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const e = explosions[i];
+    e.life -= dt;
+    e.radius = lerp(0, e.maxRadius, 1 - e.life / 0.6);
+    if (e.life <= 0) explosions.splice(i, 1);
+  }
+}
+
+function drawExplosions() {
+  for (const e of explosions) {
+    const sx = e.x - camX + W/2;
+    const sy = e.y - camY + H/2;
+    const alpha = e.life / 0.6;
+    ctx.strokeStyle = e.color;
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(sx, sy, e.radius, 0, TAU);
+    ctx.stroke();
+    // Inner fill
+    ctx.fillStyle = e.color;
+    ctx.globalAlpha = alpha * 0.1;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── GRID BACKGROUND ──────────────────────────────────────────────────────────
+function drawGrid() {
+  const gridSize = 100;
+  const offsetX = (-camX % gridSize + gridSize) % gridSize;
+  const offsetY = (-camY % gridSize + gridSize) % gridSize;
+
+  ctx.strokeStyle = 'rgba(0,180,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = offsetX; x < W; x += gridSize) {
+    ctx.moveTo(x, 0); ctx.lineTo(x, H);
+  }
+  for (let y = offsetY; y < H; y += gridSize) {
+    ctx.moveTo(0, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+}
+
+// ─── WEAPON MODE INDICATOR ───────────────────────────────────────────────────
+function drawWeaponHUD() {
+  const w = WEAPONS[player.weaponMode];
+  const cx = W / 2, by = H - 40;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(cx - 120, by - 18, 240, 36);
+  ctx.strokeStyle = w.color;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - 120, by - 18, 240, 36);
+  ctx.fillStyle = w.color;
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(`[${player.weaponMode + 1}] ${w.name}`, cx, by + 4);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#aaa';
+  ctx.font = '11px Courier New';
+  ctx.fillText(`Energy: ${Math.floor(player.energy)}`, cx + 130, by + 4);
+}
+
+// ─── AIM CROSSHAIR ───────────────────────────────────────────────────────────
+function drawCrosshair() {
+  const sx = worldMouseX - camX + W/2;
+  const sy = worldMouseY - camY + H/2;
+  const w = WEAPONS[player.weaponMode];
+  ctx.strokeStyle = w.color;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.8;
+  const size = 12;
+  ctx.beginPath();
+  ctx.moveTo(sx - size, sy); ctx.lineTo(sx - 4, sy);
+  ctx.moveTo(sx + 4, sy); ctx.lineTo(sx + size, sy);
+  ctx.moveTo(sx, sy - size); ctx.lineTo(sx, sy - 4);
+  ctx.moveTo(sx, sy + 4); ctx.lineTo(sx, sy + size);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(sx, sy, 3, 0, TAU);
+  ctx.fillStyle = w.color;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+// ─── GAME FLOW ────────────────────────────────────────────────────────────────
+function startGame() {
+  running = true;
+  document.getElementById('center-msg').style.display = 'none';
+}
+
+function endGame() {
+  gameOver = true;
+  running = false;
+  showCenterMsg('STATION DESTROYED', `Score: ${player.score} — Wave ${waveNumber} — Press to Restart`);
+}
+
+function winGame() {
+  gameOver = true;
+  running = false;
+  showCenterMsg('🎉 VICTORY!', `All 20 Waves Cleared! Score: ${player.score} — Press to Restart`);
+}
+
+function resetGame() {
+  player.hull = 100; player.shields = 100; player.energy = 100;
+  player.score = 0; player.invincible = 0;
+  player.x = 0; player.y = 0;
+  camX = 0; camY = 0;
+  platforms.length = 0; bullets.length = 0;
+  enemies.length = 0; enemyBullets.length = 0;
+  particles.length = 0; pickups.length = 0;
+  explosions.length = 0;
+  waveNumber = 1; enemiesSpawned = 0; spawnTimer = 1; waveDelay = 0;
+  gameOver = false; running = false;
+  document.getElementById('center-msg').style.display = 'none';
+}
+
+function showCenterMsg(title, sub) {
+  const el = document.getElementById('center-msg');
+  document.getElementById('msg-title').textContent = title;
+  document.getElementById('msg-sub').textContent = sub;
+  el.style.display = 'block';
+}
+
+// ─── HUD UPDATE ──────────────────────────────────────────────────────────────
+function updateHUD() {
+  document.getElementById('wave').textContent = waveNumber;
+  document.getElementById('score').textContent = player.score;
+  document.getElementById('hull').textContent = Math.max(0, Math.floor(player.hull));
+  document.getElementById('shields').textContent = Math.max(0, Math.floor(player.shields));
+  document.getElementById('plat-count').textContent = platforms.length;
+  document.getElementById('energy').textContent = Math.floor(player.energy);
+}
+
+// ─── SPACE KEY ────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' && running) placePlatform();
+});
+
+// ─── SCREEN SHAKE ─────────────────────────────────────────────────────────────
+function getShakeOffset() {
+  if (player.cameraShake <= 0) return [0, 0];
+  const intensity = player.cameraShake * 15;
+  return [rnd(-intensity, intensity), rnd(-intensity, intensity)];
+}
+
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+function loop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+  gameTime += dt;
+
+  ctx.fillStyle = '#020a14';
+  ctx.fillRect(0, 0, W, H);
+
+  // Camera shake
+  const [shX, shY] = getShakeOffset();
+  ctx.save();
+  ctx.translate(shX, shY);
+
+  drawStars();
+  drawGrid();
+
+  if (running && !paused) {
+    fireCooldown = Math.max(0, fireCooldown - dt);
+    updatePlayer(dt);
+    updatePlatforms(dt);
+    updateEnemies(dt);
+    updateBullets(dt);
+    updatePickups(dt);
+    updateParticles(dt);
+    updateExplosions(dt);
+
+    if (waveDelay > 0) {
+      waveDelay -= dt;
+      if (waveDelay <= 0 && enemies.length === 0 && enemiesSpawned >= getWaveConfig(waveNumber).count) {
+        // Wave clear flash
+      }
+    }
+  }
+
+  // Draw everything
+  drawExplosions();
+  drawPickups();
+  drawBullets();
+  drawPlatforms();
+  drawEnemies();
+  drawPlayer();
+
+  drawParticles();
+
+  // Scanlines overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.03)';
+  for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 2);
+
+  ctx.restore();
+
+  // UI
+  if (!running && !gameOver) {
+    showCenterMsg('⌖ ORBITAL SIEGE ⌖', 'Click to Begin — WASD: Move — Space: Place Platform');
+  }
+
+  if (paused && running) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#0ff';
+    ctx.font = 'bold 32px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('PAUSED', W/2, H/2);
+    ctx.font = '14px Courier New';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText('Press P to Resume', W/2, H/2 + 30);
+    ctx.textAlign = 'left';
+  }
+
+  drawWeaponHUD();
+  drawCrosshair();
+  updateHUD();
+
+  requestAnimationFrame(loop);
+}
+
+// Init
+showCenterMsg('⌖ ORBITAL SIEGE ⌖', 'Click to Begin — WASD: Move — Space: Place Platform');
+requestAnimationFrame(ts => { lastTime = ts; loop(ts); });
+</script>
+</body>
+</html>

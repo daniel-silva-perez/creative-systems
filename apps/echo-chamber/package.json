@@ -1,0 +1,10 @@
+{
+  "name": "echo-chamber",
+  "version": "1.0.0",
+  "description": "Spatial audio memory palace — navigate your voice whispers in 3D space",
+  "scripts": {
+    "dev": "npx serve .",
+    "start": "npx serve ."
+  },
+  "dependencies": {}
+}

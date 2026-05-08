@@ -1,0 +1,12 @@
+{
+  "name": "orbital-siege",
+  "version": "1.0.0",
+  "description": "Real-time orbital defense game — defend your station against waves of alien ships",
+  "scripts": {
+    "start": "npx serve .",
+    "build": "echo 'No build step — single HTML file'"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}
